@@ -209,9 +209,9 @@ var PROBLEMS = [
   { code: "daemon_unresponsive", fix: "restart", blocking: true },
   { code: "not_registered", fix: "register", blocking: true },
   { code: "not_through_cloudflare", fix: "reconnect", blocking: false },
-  { code: "dns_broken", fix: null, blocking: false },
-  { code: "dns_bypassed", fix: "reconnect", blocking: false },
-  { code: "dns_shared", fix: null, blocking: false }
+  { code: "dns_broken", fix: null, blocking: false, dns: true },
+  { code: "dns_bypassed", fix: "reconnect", blocking: false, dns: true },
+  { code: "dns_shared", fix: null, blocking: false, dns: true }
 ]
 
 // Where a Problem stands in precedence order, or -1 when it is not exactly
@@ -226,14 +226,17 @@ function problemRank(value) {
 }
 
 // Known Problems, each once and in precedence order. A blocking Problem
-// nulls every fact below it, so it is always alone.
+// nulls every fact below it, so it is always alone, and the probe has one
+// DNS verdict, so there is at most one DNS code.
 function isProblemList(value) {
   if (!Array.isArray(value)) return false
   var last = -1
+  var dns = 0
   for (var i = 0; i < value.length; i++) {
     var rank = problemRank(value[i])
     if (rank <= last) return false
     if (value[i].blocking && value.length !== 1) return false
+    if (PROBLEMS[rank].dns && ++dns > 1) return false
     last = rank
   }
   return true
@@ -350,17 +353,20 @@ function heroMeta(connection, job, problem, through, checking) {
 
 // The live Job as the note: what it does, and that it is in a terminal.
 function jobNote(job, now) {
-  return { kind: "job", line: message("job." + job.action), detail: message("job.hint", { ago: ago(job.started_at, now) }) }
+  return { kind: "job", line: message("job." + job.action), detail: message("job.hint", { ago: ago(job.started_at, now) }), more: null }
 }
 
-// problems[0] as the note: its line and one-line explanation.
-function problemNote(problem) {
-  return { kind: "problem", line: message("problem." + problem.code), detail: message("why." + problem.code) }
+// problems[0] as the note: its line and one-line explanation, and a second
+// Problem's line after a "+" when there is one.
+function problemNote(problems) {
+  var problem = problems[0]
+  var more = problems.length > 1 ? message("problem.more", { line: message("problem." + problems[1].code) }) : null
+  return { kind: "problem", line: message("problem." + problem.code), detail: message("why." + problem.code), more: more }
 }
 
 // Connected with nothing to confirm it: a neutral note, not a Problem.
 function unconfirmedNote() {
-  return { kind: "unconfirmed", line: message("unconfirmed"), detail: null }
+  return { kind: "unconfirmed", line: message("unconfirmed"), detail: null, more: null }
 }
 
 // The exit IP, with Cloudflare's location only while Through Cloudflare.
@@ -479,7 +485,7 @@ function view(doc, flags, now) {
     banner: broken ? message("backendError") : null,
     bar: barIcon(connection, job, problem, through, maintenanceDot(doc)),
     hero: { title: message("title"), meta: message(meta) },
-    note: job ? jobNote(job, now) : problem ? problemNote(problem) : meta === "meta.unconfirmed" ? unconfirmedNote() : null,
+    note: job ? jobNote(job, now) : problem ? problemNote(doc.problems) : meta === "meta.unconfirmed" ? unconfirmedNote() : null,
     ip: ipRow(probe, through, checking, !job && !(problem && problem.blocking)),
     primary: fix || (restart ? restart.button : update && update.primary ? update.button : null),
     restart: restart,
