@@ -12,6 +12,7 @@ class ScriptedSystem:
     def __init__(self, result=None):
         self.result = result if result is not None else CompletedProcess([], 0, 'Success\n', '')
         self.calls = []
+        self.runtime_dir = None
 
     def run(self, argv, *, timeout):
         self.calls.append((list(argv), timeout))
@@ -58,3 +59,17 @@ class ConnectionTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertEqual(out, '')
                 self.assertIn(reason, err)
+
+    def test_reconnect_disconnects_before_connecting_without_root(self):
+        system = ScriptedSystem()
+        code, out, err = run(['reconnect'], system)
+        self.assertEqual((code, out, err), (0, '', ''))
+        self.assertEqual([argv for argv, _ in system.calls],
+                         [['warp-cli', 'disconnect'], ['warp-cli', 'connect']])
+
+    def test_reconnect_stops_when_disconnect_fails(self):
+        system = ScriptedSystem(CompletedProcess([], 1, '', 'disconnect failed'))
+        code, _, err = run(['reconnect'], system)
+        self.assertEqual(code, 1)
+        self.assertIn('disconnect failed', err)
+        self.assertEqual([argv for argv, _ in system.calls], [['warp-cli', 'disconnect']])
