@@ -1,62 +1,93 @@
 # oma-warp
 
-An Omarchy bar widget for Cloudflare WARP and verified client maintenance on Arch.
+An Omarchy bar widget for Cloudflare WARP and verified client maintenance on
+x86_64 Omarchy. The widget opens the **Panel**, which shows WARP status and
+provides the controls for turning WARP on or off and maintaining the client.
 
-**Work in progress.** Install it as a shell plugin:
+## Install and update
+
+On x86_64 Omarchy, install and enable the plugin with:
 
 ```sh
 omarchy plugin add https://github.com/spitefulFr0g/oma-warp --enable
 ```
 
-A cloud icon appears in the bar: dimmed while WARP is off or connecting, outlined
-while connected but not yet confirmed Through Cloudflare. Clicking it opens the
-Panel, whose switch turns WARP on and off without root. If the backend fails or
-prints a document the Panel doesn't understand, the Panel greys out, disables
-its switch and says "Couldn't read WARP status".
-
-The Panel only runs the backend, `/usr/bin/python3 -I -B <plugin>/oma-warp`,
-with `status --json`, `connect` or `disconnect`. It polls status every 3 s
-while open and every 15 s while closed. All of its decisions live in
-`PanelLogic.js`, which has no Omarchy or Quickshell imports, and its copy lives
-in `i18n/en.json`.
-
-The backend provides read-only client facts:
+Update the plugin and its Panel and backend together with:
 
 ```sh
-./oma-warp status --json
-# Equivalent isolated invocation used by the Panel:
-/usr/bin/python3 -I -B ./oma-warp status --json
+omarchy plugin update
 ```
 
-Status always prints a schema-1 document with every key present. Unknown facts
-are `null`; a partial document still exits successfully. A connected client
-with no probe result is Unconfirmed. Probe, update and Job results are not yet
-implemented, and the Problem list is empty in this slice.
+An AUR helper may notice the package name `cloudflare-warp-bin` and offer to
+swap it for the AUR package. oma-warp obtains and installs the client from
+Cloudflare's verified repository instead.
 
-The stdlib-only `oma_warp` package runs local fact commands concurrently with
-1.5 second timeouts. Commands, HTTPS, time, and runtime/cache directory locations
-are supplied by one injectable system boundary. Status does not change the
-service, registration, packages or network settings.
+## The Panel
+
+Click the cloud icon in the Omarchy bar to open the Panel. Its **Status** view
+shows the WARP switch, the current Problem or running Job, and the exit IP when
+available. It offers the relevant fix, Update or Restart action when one is
+needed. A full cloud means Cloudflare's trace endpoint confirmed traffic is
+**Through Cloudflare**. An outlined cloud means WARP is connected but that
+confirmation is not available yet. A crossed-out cloud indicates a Problem;
+the small dot indicates an available update or a needed restart.
+
+Open **Diagnostics** with the ⓘ control to see package, service, daemon,
+registration, connection, Through Cloudflare, location, DNS and latest-release
+details. A Problem's fix appears beside the related detail. Diagnostics also
+provides the automatic check setting and a manual check action.
+
+Install, Update, Restart, Start service and Register run as **Jobs** in a
+floating terminal. This lets sudo and Cloudflare's registration terms prompt
+work normally. The Panel shows the active Job while it runs; its result and any
+follow-up prompt appear in the terminal.
+
+## Verification and trust
+
+Before oma-warp offers or installs a release, it checks Cloudflare's signed
+repository metadata against a pinned signing-key fingerprint, verifies the
+package index checksum, and verifies the package checksum. Redirects are
+refused. The pinned fingerprint is a reviewed constant in this project; it is
+not independently certified. A signing-key rotation fails closed and requires
+a reviewed source change.
+
+Cloudflare's signed metadata does not provide `Valid-Until`. To defend against
+replayed older metadata, Update compares the verified release with the
+installed version and refuses a downgrade. An equal or older release is left
+installed.
+
+## Remove the plugin
+
+To remove oma-warp and the WARP client, run this from the plugin directory in
+a terminal:
+
+```sh
+./oma-warp uninstall
+```
+
+The command confirms once, then removes the WARP connection and registration,
+stops and disables its service, removes the client and its state, clears
+oma-warp's cache and runtime files, and removes the plugin. Privileged steps
+use sudo in that terminal. It stops at the first failure; run the same command
+again to resume cleanup.
+
+Disabling the plugin leaves the client, service, registration and plugin files
+in place. Disable is reversible; use the uninstall command above for removal.
 
 ## Development
 
-Run `dev/check` before merging. It runs pytest (a development dependency),
-Qt 6 `qmllint` for all QML files (no warnings allowed, with the installed
-Omarchy shell's `qs.*` modules on the import path), Qt 6 qmltestrunner
-(offscreen) when QML tests exist,
-`omarchy plugin validate` on the repository root, and `dev/scrub`. Missing tools
-and failed checks make the gate fail; all steps still run. QML steps with no
-inputs pass. The gate enables local-file XHR for shared QML Fixtures.
+Run the full development gate before contributing:
 
-The tests also run without pytest using
-`/usr/bin/python3 -B -m unittest discover -s tests`. Backend scenarios fake only
-the system boundary and reproduce the shared `tests/fixtures/` documents.
+```sh
+./dev/check
+```
 
-The scrub check scans tracked and non-ignored files for personal machine facts,
-trace locations and IPs outside the documentation ranges. It discovers local
-identity values at runtime. Only the required public plugin id and repository
-URL are exempt from username matching. Examples use `~`, `colo=XXX`, `loc=XX`,
-203.0.113.0/24, 198.51.100.0/24 or 2001:db8::/32.
+The gate runs pytest, Qt 6 `qmllint`, Qt 6 `qmltestrunner` when QML tests are
+present, Omarchy plugin manifest validation, and the privacy scrub. Install
+pytest, the Qt 6 QML tools, and Omarchy's shell imports when setting up a
+development environment. The gate fails when a required tool is missing or a
+check fails. Backend tests fake system effects; they do not change the host's
+WARP configuration.
 
 ## License
 
