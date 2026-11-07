@@ -19,6 +19,7 @@ COMMANDS = {
 class ClientFacts:
     client: dict
     operation_mode: str | None
+    service_started: str | None = None
 
 
 def gather(system):
@@ -43,10 +44,11 @@ def gather(system):
               'registered': None, 'connection': None}
     mode = document(raw['settings']).get('settings', {})
     mode = mode.get('operation_mode') if isinstance(mode, dict) else None
-    facts = ClientFacts(client, mode if isinstance(mode, str) else None)
+    service = dict(line.split('=', 1) for line in (raw['service'] or '').splitlines() if '=' in line)
+    facts = ClientFacts(client, mode if isinstance(mode, str) else None,
+                        service.get('ActiveEnterTimestamp'))
     if not version:
         return facts
-    service = dict(line.split('=', 1) for line in (raw['service'] or '').splitlines() if '=' in line)
     active = service.get('ActiveState')
     if active in ('active', 'reloading'):
         client['service'] = 'running'
