@@ -72,9 +72,9 @@ function shellQuote(word) {
   return "'" + String(word).replace(/'/g, "'\\''") + "'"
 }
 
-// The Jobs the Panel launches. Install and Restart service are Jobs the
-// backend knows, but their fix buttons are not wired up yet.
-var LAUNCHED_JOBS = ["start", "register"]
+// The Jobs the Panel launches. Restart service is a Job the backend knows,
+// but its fix button is not wired up yet.
+var LAUNCHED_JOBS = ["install", "start", "register"]
 
 // The launcher argv for the primary button's Job, or null when the button
 // is missing, disabled or not a Job the Panel launches.
