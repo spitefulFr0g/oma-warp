@@ -888,9 +888,9 @@ TestCase {
       { tag: "shared, restart", line: "Some DNS lookups skip WARP", fixture: "dns_shared", restart: true, update: false,
         primary: "Restart", action: "restart", restartRow: true, updateRow: null },
       { tag: "broken, update", line: "DNS lookups are failing", fixture: "dns_broken", restart: false, update: true,
-        primary: "Update", action: undefined, restartRow: false, updateRow: "primary" },
+        primary: "Update", action: "update", restartRow: false, updateRow: "primary" },
       { tag: "shared, update", line: "Some DNS lookups skip WARP", fixture: "dns_shared", restart: false, update: true,
-        primary: "Update", action: undefined, restartRow: false, updateRow: "primary" },
+        primary: "Update", action: "update", restartRow: false, updateRow: "primary" },
     ]
   }
 
@@ -905,7 +905,13 @@ TestCase {
     compare(v.primary.enabled, true)
     compare(v.restart !== null, row.restartRow)
     if (row.updateRow === null) compare(v.update, null)
-    else compare(v.update.primary, row.updateRow === "primary")
+    else {
+      compare(v.update.primary, row.updateRow === "primary")
+      // Update runs its Job from either position.
+      compare(Logic.jobLaunch("/srv/oma-warp", v.update.button, "k9-x1"),
+              ["omarchy-launch-floating-terminal-with-presentation",
+               "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'update' '--job-id' 'k9-x1'"])
+    }
     compare(v.note.kind, "problem")
     compare(say(v.note.line), row.line)
     compare(say(v.note.more), row.more || null)
