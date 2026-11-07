@@ -564,15 +564,19 @@ function latestCell(client, update, now) {
   return latest
 }
 
-function packageCell(client) {
-  return client.version === null ? cell("val.notInstalled", "bad") : cell("val.version", "normal", { v: client.version })
+// The package is absent only when the backend says so with not_installed.
+// A version it couldn't read is unknown, not missing.
+function packageCell(client, problems) {
+  if (client.version !== null) return cell("val.version", "normal", { v: client.version })
+  var absent = problems.some(function(problem) { return problem.code === "not_installed" })
+  return absent ? cell("val.notInstalled", "bad") : cell(UNKNOWN, "muted")
 }
 
 function diagnosticsRows(doc, checking, broken, toggling, now) {
   var client = doc.client
   var connection = client.connection
   var cells = {
-    package: packageCell(client),
+    package: packageCell(client, doc.problems),
     service: serviceCell(client),
     daemon: daemonCell(client),
     registration: registrationCell(client),

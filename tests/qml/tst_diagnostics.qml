@@ -180,6 +180,16 @@ TestCase {
       { tag: "never verified, check failed", fixture: "off", change: function(d) { d.update.last_error = "network" },
         label: "Latest release", value: "Never checked", error: "Last check couldn't reach Cloudflare", tone: "muted" },
       { tag: "not installed", fixture: "not_installed", label: "Package", value: "Not installed", tone: "bad" },
+      // Only the backend's not_installed Problem says the package is absent.
+      // A package database that timed out or couldn't be read leaves every
+      // client fact unknown, with no Problem.
+      { tag: "package facts unknown", fixture: "off",
+        change: function(d) {
+          d.client = { version: null, service: null, restart_needed: null, daemon: null, registered: null, connection: null }
+        },
+        label: "Package", value: "—", tone: "muted" },
+      { tag: "package version unreadable", fixture: "off", change: function(d) { d.client.version = null },
+        label: "Package", value: "—", tone: "muted" },
       { tag: "stopped", fixture: "service_stopped", label: "Service", value: "Stopped", tone: "bad" },
       { tag: "restart unknown", fixture: "on", change: function(d) { d.client.restart_needed = null },
         label: "Service", value: "Running", tone: "normal" },

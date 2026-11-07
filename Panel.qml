@@ -793,7 +793,9 @@ Panel {
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: root.noteSize
-                  elide: Text.ElideRight
+                  // The installed version is the point of the line: it wraps
+                  // rather than being cut off at the Panel's width.
+                  wrapMode: Text.Wrap
                 }
               }
             }
