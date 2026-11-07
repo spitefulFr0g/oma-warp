@@ -244,3 +244,33 @@ def test_independent_processes_share_exclusive_ownership(tmp_path):
         if process.is_alive():
             process.terminate()
         process.join(5)
+
+
+def test_register_inherits_terminal_and_reports_live_job_until_completion():
+    system = JobSystem()
+    def during():
+        assert status(system)['job'] == {'action': 'register', 'started_at': '2026-10-02T00:00:00Z'}
+        assert main(['start', '--job-id', 'contender'], system=system) == 1
+    system.during_terminal = during
+    assert main(['register', '--job-id', 'registration'], system=system) == 0
+    assert system.commands == [['warp-cli', 'registration', 'new']]
+    assert status(system)['job'] is None
+    assert system.runtime_dir / 'job.json' not in system.files
+    assert any('registered' in message.lower() for message in system.messages)
+
+
+def test_register_failure_interruption_and_contention_use_shared_job_cleanup():
+    for result, expected in ((CompletedProcess([], 7), 7),
+                             (FileNotFoundError('missing warp-cli'), 1),
+                             (KeyboardInterrupt(), 130)):
+        system = JobSystem()
+        system.terminal_result = result
+        assert main(['register', '--job-id', 'failure'], system=system) == expected
+        assert status(system)['job'] is None
+        assert system.runtime_dir / 'job.json' not in system.files
+        assert not system.locked
+        assert system.messages
+    system = JobSystem()
+    system.locked = True
+    assert main(['register', '--job-id', 'contender'], system=system) == 1
+    assert system.commands == []

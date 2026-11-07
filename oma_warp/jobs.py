@@ -78,3 +78,14 @@ def start(system, job_id):
         system.write('WARP service started.')
         return 0
     return run_job(system, 'start', job_id, operation)
+
+
+def register(system, job_id):
+    def operation():
+        result = system.run_terminal(['warp-cli', 'registration', 'new'])
+        if result.returncode != 0:
+            system.write('Could not register this device with WARP.')
+            return result.returncode if result.returncode > 0 else 1
+        system.write('Device registered with WARP.')
+        return 0
+    return run_job(system, 'register', job_id, operation)

@@ -19,16 +19,21 @@ COMMANDS = {
 class ClientFacts:
     client: dict
     operation_mode: str | None
+    installed: bool | None = None
     service_started: str | None = None
 
 
 def gather(system):
+    missing_package = object()
+
     def read(argv):
         try:
             result = system.run(argv, timeout=1.5)
             if result.returncode == 0:
                 return result.stdout
-            if argv[-2:] == ['registration', 'show'] and document(result.stdout).get('error') == 'MissingRegistration':
+            if argv == COMMANDS['package'] and result.returncode == 1 and result.stderr.strip() == "error: package 'cloudflare-warp-bin' was not found":
+                return missing_package
+            if argv[0] == 'warp-cli' and result.returncode == 1 and document(result.stdout).get('error') == 'MissingRegistration':
                 return result.stdout
             return None
         except (OSError, subprocess.TimeoutExpired):
@@ -37,8 +42,11 @@ def gather(system):
     with ThreadPoolExecutor(max_workers=5) as pool:
         pending = {key: pool.submit(read, argv) for key, argv in COMMANDS.items()}
         raw = {key: future.result() for key, future in pending.items()}
-    package = dict(re.findall(r'^([^:\n]+?)\s*:\s*(.*)$', raw['package'] or '', re.M))
+    package_text = raw['package'] if isinstance(raw['package'], str) else ''
+    package = dict(re.findall(r'^([^:\n]+?)\s*:\s*(.*)$', package_text, re.M))
     version = package.get('Version')
+    if version is not None and not re.fullmatch(r'[0-9]+(?:\.[0-9]+)+(?:-[0-9]+)?', version):
+        version = None
     client = {'version': version.rsplit('-', 1)[0] if version else None,
               'service': None, 'restart_needed': None, 'daemon': None,
               'registered': None, 'connection': None}
@@ -46,7 +54,8 @@ def gather(system):
     mode = mode.get('operation_mode') if isinstance(mode, dict) else None
     service = dict(line.split('=', 1) for line in (raw['service'] or '').splitlines() if '=' in line)
     facts = ClientFacts(client, mode if isinstance(mode, str) else None,
-                        service.get('ActiveEnterTimestamp'))
+                        installed=False if raw['package'] is missing_package else True if version else None,
+                        service_started=service.get('ActiveEnterTimestamp'))
     if not version:
         return facts
     active = service.get('ActiveState')
@@ -63,14 +72,18 @@ def gather(system):
     if client['service'] != 'running':
         return facts
     connection = document(raw['status']).get('status')
-    client['daemon'] = 'ok' if connection in ('Connected', 'Connecting', 'Disconnected') else 'unresponsive'
+    missing = document(raw['status']).get('error') == 'MissingRegistration'
+    if connection in ('Connected', 'Connecting', 'Disconnected') or missing:
+        client['daemon'] = 'ok'
+    elif raw['status'] is None:
+        client['daemon'] = 'unresponsive'
     if client['daemon'] != 'ok':
         return facts
-    client['connection'] = connection.lower()
+    client['connection'] = connection.lower() if isinstance(connection, str) else None
     registration = document(raw['registration'])
     if isinstance(registration.get('id'), str) and registration['id']:
         client['registered'] = True
-    elif registration.get('error') == 'MissingRegistration':
+    elif registration.get('error') == 'MissingRegistration' or missing:
         client['registered'] = False
         client['connection'] = None
     return facts
