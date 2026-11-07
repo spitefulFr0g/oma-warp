@@ -3,6 +3,7 @@ import argparse
 import json
 from .client import gather
 from .connection import switch
+from .jobs import live_job, start
 from .status import assemble_status
 from .system import System
 from .uninstall import uninstall
@@ -19,6 +20,8 @@ def main(argv=None, *, system=None):
     sub.add_parser('connect')
     sub.add_parser('disconnect')
     sub.add_parser('uninstall')
+    job = sub.add_parser('start')
+    job.add_argument('--job-id', required=True)
     args = parser.parse_args(argv)
     system = system if system is not None else System()
     if args.command == 'check':
@@ -29,8 +32,11 @@ def main(argv=None, *, system=None):
         return int(document['last_error'] is not None)
     if args.command in ('connect', 'disconnect'):
         return switch(system, args.command)
+    if args.command == 'start':
+        return start(system, args.job_id)
     if args.command == 'uninstall':
         return uninstall(system)
     client = gather(system).client
-    print(json.dumps(assemble_status(client, None, status_update(system, client['version']), None, system.now())))
+    print(json.dumps(assemble_status(client, None, status_update(system, client['version']),
+                                     live_job(system), system.now())))
     return 0

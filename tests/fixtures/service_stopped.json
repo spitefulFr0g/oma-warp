@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "observed_at": "2026-10-02T00:00:00Z",
+  "client": {
+    "version": "2026.8.2115.0",
+    "service": "stopped",
+    "restart_needed": null,
+    "daemon": null,
+    "registered": null,
+    "connection": null
+  },
+  "probe": null,
+  "update": {
+    "latest": null,
+    "verified_at": null,
+    "available": null,
+    "last_error": null,
+    "due": true
+  },
+  "job": null,
+  "problems": [
+    {"code": "service_stopped", "fix": "start", "blocking": true}
+  ]
+}

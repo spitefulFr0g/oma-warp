@@ -1,9 +1,12 @@
 """The injectable boundary for all product effects."""
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import urllib.request
 
 
@@ -64,6 +67,52 @@ class System:
             path.unlink()
         else:
             shutil.rmtree(path)
+
+    def read_text(self, path):
+        return path.read_text(encoding='utf-8')
+
+    def atomic_write(self, path, text):
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(text)
+            os.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def remove_file(self, path):
+        path.unlink(missing_ok=True)
+
+    @contextmanager
+    def exclusive_lock(self, path):
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with path.open('a') as stream:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+    @property
+    def current_pid(self):
+        return os.getpid()
+
+    def process_start_time(self, pid):
+        try:
+            # comm (field 2) can contain spaces and parentheses. Field 22 is
+            # ticks since boot, stable for a process even when a PID is reused.
+            fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+            return fields[19] if fields[0] not in ('Z', 'X', 'x') else None
+        except (OSError, IndexError, ValueError):
+            return None
 
     def run_bytes(self, argv, *, timeout):
         return subprocess.run(argv, capture_output=True, timeout=timeout, check=False,
