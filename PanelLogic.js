@@ -6,6 +6,7 @@
 
 var CLOUD = String.fromCodePoint(0xF015F)          // nf-md-cloud
 var CLOUD_OUTLINE = String.fromCodePoint(0xF0163)  // nf-md-cloud_outline
+var CLOUD_OFF = String.fromCodePoint(0xF0164)      // nf-md-cloud_off_outline
 var DIMMED = 0.42
 
 function message(key, args) {
@@ -16,6 +17,30 @@ function format(template, args) {
   return String(template).replace(/\{(\w+)\}/g, function(whole, name) {
     return args && Object.prototype.hasOwnProperty.call(args, name) ? String(args[name]) : whole
   })
+}
+
+function isMessage(value) {
+  return isObject(value) && typeof value.key === "string" && isObject(value.args)
+}
+
+// A message to text, with lookup(key) giving the template. Arguments that
+// are messages themselves ("started {ago}") are resolved first.
+function resolve(msg, lookup) {
+  var args = {}
+  for (var name in msg.args) {
+    var value = msg.args[name]
+    args[name] = isMessage(value) ? resolve(value, lookup) : value
+  }
+  return format(lookup(msg.key), args)
+}
+
+// How long ago an ISO time was, as "{n} s / min / h ago". A clock behind
+// the record reads as just now.
+function ago(iso, now) {
+  var seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(iso)) / 1000))
+  if (seconds < 60) return message("time.s", { n: seconds })
+  if (seconds < 3600) return message("time.min", { n: Math.floor(seconds / 60) })
+  return message("time.h", { n: Math.floor(seconds / 3600) })
 }
 
 // The backend is always this interpreter, isolated (-I) and writing no
@@ -37,6 +62,37 @@ function backendCommand(dir, action) {
   return [PYTHON, "-I", "-B", dir + "/oma-warp"].concat(COMMANDS[action])
 }
 
+// A Job runs in a floating terminal the Panel never holds on to. The
+// launcher passes its one argument to bash -c, so each word is quoted.
+var LAUNCHER = "omarchy-launch-floating-terminal-with-presentation"
+var JOB_ID = /^[0-9a-z][0-9a-z-]*$/
+
+function shellQuote(word) {
+  return "'" + String(word).replace(/'/g, "'\\''") + "'"
+}
+
+// The launcher argv for the primary button's Job, or null when the button
+// is missing, disabled or not a Job.
+function jobLaunch(dir, primary, jobId) {
+  if (!dir || !primary || primary.enabled !== true || JOB_ACTIONS.indexOf(primary.action) < 0) return null
+  if (typeof jobId !== "string" || !JOB_ID.test(jobId)) return null
+  var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", primary.action, "--job-id", jobId]
+  return [LAUNCHER, argv.map(shellQuote).join(" ")]
+}
+
+// A fresh job id from the time in ms and a random draw in [0, 1).
+function jobId(nowMs, random) {
+  var draw = Math.floor(Math.min(Math.max(Number(random) || 0, 0), 1) * 0x7fffffff)
+  return Math.floor(Math.abs(Number(nowMs) || 0)).toString(36) + "-" + draw.toString(36)
+}
+
+// The live Job's record, watched so a Job's start and end re-poll at once.
+// $XDG_RUNTIME_DIR/oma-warp/job.json, as the backend writes it.
+function jobRecordPath(runtimeDir) {
+  var dir = typeof runtimeDir === "string" ? runtimeDir.replace(/\/+$/, "") : ""
+  return dir.charAt(0) === "/" ? dir + "/oma-warp/job.json" : ""
+}
+
 function pollInterval(opened) {
   return opened ? 3000 : 15000
 }
@@ -46,6 +102,20 @@ function isObject(value) {
 }
 
 var CONNECTIONS = [null, "connected", "connecting", "disconnected"]
+var PROBLEM_CODES = ["not_installed", "service_stopped", "daemon_unresponsive", "not_registered",
+                     "not_through_cloudflare", "dns_broken", "dns_bypassed", "dns_shared"]
+var FIXES = [null, "install", "start", "restart", "register", "reconnect"]
+var JOB_ACTIONS = ["install", "update", "restart", "start", "register"]
+
+function isProblem(value) {
+  return isObject(value) && PROBLEM_CODES.indexOf(value.code) >= 0
+    && FIXES.indexOf(value.fix) >= 0 && typeof value.blocking === "boolean"
+}
+
+function isJob(value) {
+  return value === null || (isObject(value) && JOB_ACTIONS.indexOf(value.action) >= 0
+    && typeof value.started_at === "string" && !isNaN(Date.parse(value.started_at)))
+}
 
 // `status --json` output is untrusted text. Anything that is not a schema-1
 // document this Panel understands answers null: the backend is broken.
@@ -58,33 +128,67 @@ function parseStatus(text) {
   }
   if (!isObject(doc) || doc.schema !== 1 || !isObject(doc.client)) return null
   if (CONNECTIONS.indexOf(doc.client.connection) < 0) return null
+  if (!Array.isArray(doc.problems) || !doc.problems.every(isProblem)) return null
+  if (!isJob(doc.job)) return null
   return doc
 }
 
 var META = { disconnected: "meta.off", connecting: "meta.connecting", connected: "meta.unconfirmed" }
 
-// Connected earns the outlined cloud until a probe confirms Through
-// Cloudflare; everything else is the full cloud, dimmed.
-function barIcon(connection) {
+// A running Job is calm, never crossed out, even over the Problem it fixes.
+// Otherwise any Problem crosses the cloud out. Connected earns the outlined
+// cloud until a probe confirms Through Cloudflare; everything else is the
+// full cloud, dimmed.
+function barIcon(connection, job, problem) {
+  if (job) return { glyph: CLOUD, opacity: DIMMED }
+  if (problem) return { glyph: CLOUD_OFF, opacity: 1 }
   if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1 }
   return { glyph: CLOUD, opacity: DIMMED }
+}
+
+function heroMeta(connection, job, problem) {
+  if (job) return "meta.job"
+  if (problem) return "meta.problem"
+  return Object.prototype.hasOwnProperty.call(META, connection) ? META[connection] : "meta.unknown"
+}
+
+// The live Job as the note: what it does, and that it is in a terminal.
+function jobNote(job, now) {
+  return { kind: "job", line: message("job." + job.action), detail: message("job.hint", { ago: ago(job.started_at, now) }) }
+}
+
+// problems[0] as the note: its line and one-line explanation.
+function problemNote(problem) {
+  return { kind: "problem", line: message("problem." + problem.code), detail: message("why." + problem.code) }
+}
+
+// The one thing to do now, as a full-width button.
+function primaryButton(problem, broken) {
+  if (!problem || !problem.fix) return null
+  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken }
 }
 
 function view(doc, flags, now) {
   flags = flags || ({})
   var connection = doc ? doc.client.connection : null
   var known = Object.prototype.hasOwnProperty.call(META, connection)
+  var job = doc ? doc.job : null
+  // Nothing else is shown or offered while a Job runs.
+  var problem = doc && !job && doc.problems.length ? doc.problems[0] : null
   var on = connection === "connected" || connection === "connecting"
   var inFlight = flags.toggleInFlight === "connect" || flags.toggleInFlight === "disconnect" ? flags.toggleInFlight : null
   var broken = flags.backendError === true
   return {
     greyed: broken,
     banner: broken ? message("backendError") : null,
-    bar: barIcon(connection),
-    hero: { title: message("title"), meta: message(known ? META[connection] : "meta.unknown") },
+    bar: barIcon(connection, job, problem),
+    hero: { title: message("title"), meta: message(heroMeta(connection, job, problem)) },
+    note: job ? jobNote(job, now) : problem ? problemNote(problem) : null,
+    ip: { visible: !job && !(problem && problem.blocking) },
+    primary: primaryButton(problem, broken),
     toggle: {
       checked: inFlight ? inFlight === "connect" : on,
-      enabled: known && !inFlight && !broken,
+      enabled: known && !job && !inFlight && !broken,
       busy: !!inFlight,
       action: on ? "disconnect" : "connect"
     }
