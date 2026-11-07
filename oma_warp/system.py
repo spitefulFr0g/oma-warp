@@ -21,9 +21,6 @@ class System:
     def cache_dir(self):
         return Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'oma-warp'
 
-    def monotonic(self):
-        return time.monotonic()
-
     def now(self):
         return datetime.now(timezone.utc)
 
