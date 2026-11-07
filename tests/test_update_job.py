@@ -84,7 +84,7 @@ def test_newer_release_builds_installs_restores_and_cleans_under_one_job(upstrea
     system.comparison = 1
     assert main(['update', '--job-id', 'newer'], system=system) == 0
     assert system.commands == [
-        ['/usr/bin/makepkg', '--cleanbuild', '--noconfirm'],
+        ['/usr/bin/makepkg', '--cleanbuild', '--syncdeps'],
         ['sudo', 'pacman', '-U', str(system.build_dir / 'cloudflare-warp-bin-2026.8.2115.0-1-x86_64.pkg.tar.zst')],
         ['sudo', 'systemctl', 'restart', 'warp-svc']]
     assert system.messages == ['Connected again']

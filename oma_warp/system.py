@@ -220,5 +220,6 @@ class System:
         return digest.hexdigest(), size
 
     def run_build(self, argv, *, cwd):
-        return subprocess.run(argv, cwd=cwd, check=False, text=True, capture_output=True,
+        # Builds may invoke sudo/pacman for declared dependencies; keep prompts visible.
+        return subprocess.run(argv, cwd=cwd, check=False, text=True,
                               env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'})

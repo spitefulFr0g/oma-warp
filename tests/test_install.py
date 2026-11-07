@@ -75,8 +75,7 @@ class InstallSystem(JobSystem):
         return CompletedProcess(argv, 0)
 
     def run_build(self, argv, *, cwd):
-        result = self.run_terminal(argv, cwd=cwd)
-        return CompletedProcess(argv, result.returncode, 'build output', '')
+        return self.run_terminal(argv, cwd=cwd)
 
     def effective_uid(self):
         return 1000
@@ -90,10 +89,12 @@ def test_install_verifies_builds_installs_starts_and_registers_then_cleans(upstr
     system = InstallSystem(upstream)
     assert main(['install', '--job-id', 'example'], system=system) == 0
     assert system.commands == [
-        ['/usr/bin/makepkg', '--cleanbuild', '--noconfirm'],
+        ['/usr/bin/makepkg', '--cleanbuild', '--syncdeps'],
         ['sudo', 'pacman', '-U', str(system.build_dir / 'cloudflare-warp-bin-2026.8.2115.0-1-x86_64.pkg.tar.zst')],
         ['sudo', 'systemctl', 'enable', '--now', 'warp-svc'],
         ['warp-cli', 'registration', 'new']]
+    assert system.events.index('download') < system.events.index('/usr/bin/makepkg')
+    assert all('--noconfirm' not in command for command in system.commands)
     assert system.upstream.read_json(system.cache_dir / 'update.json')['latest'] == '2026.8.2115.0'
     assert system.scratch and all(not path.exists() for path in system.scratch)
     assert system.runtime_dir / 'job.json' not in system.files
@@ -136,6 +137,9 @@ def test_failed_install_stops_and_removes_scratch_and_job(upstream, failure):
     system = FailedSystem(upstream)
     assert main(['install', '--job-id', 'failure'], system=system) == (130 if failure == 'interrupt' else 7 if failure != 'makepkg' else 1)
     expected_count = {'makepkg': 1, 'pacman': 2, 'service': 3, 'registration': 4, 'interrupt': 1}
+    if failure == 'makepkg':
+        assert any('exit status 7' in message and 'confirm dependency installation' in message
+                   for message in system.messages)
     assert len(system.commands) == expected_count[failure]
     assert all(not path.exists() for path in system.scratch)
     assert system.runtime_dir / 'job.json' not in system.files

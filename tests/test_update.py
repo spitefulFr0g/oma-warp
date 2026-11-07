@@ -161,3 +161,58 @@ def test_malformed_cache_cannot_break_status(tmp_path, cache):
     system.write_json(system.cache_dir / 'update.json', cache)
     assert status(system)['update'] == {'latest': None, 'verified_at': None,
         'available': None, 'last_error': None, 'due': True}
+
+
+@pytest.mark.parametrize('failure', [KeyboardInterrupt, OSError])
+@pytest.mark.parametrize('source', ['dists/resolute/InRelease',
+                                   'dists/resolute/main/binary-amd64/Packages',
+                                   'pool/resolute/warp.deb'])
+def test_failed_fetch_persists_across_restart_and_next_success_clears_it(upstream, source, failure):
+    class InterruptedSystem(UpdateSystem):
+        def __init__(self):
+            super().__init__(upstream.cache_dir.parent, upstream.responses['pubkey.gpg'],
+                             upstream.responses['dists/resolute/InRelease'])
+            self.interrupt = True
+            self.scratch = []
+
+        @contextlib.contextmanager
+        def temporary_directory(self, **kwargs):
+            with super().temporary_directory(**kwargs) as directory:
+                self.scratch.append(Path(directory))
+                yield directory
+
+        def fetch(self, url, **kwargs):
+            if self.interrupt and url == repo.BASE_URL + '/' + source:
+                raise failure('fetch interrupted or offline')
+            return super().fetch(url, **kwargs)
+
+        def fetch_file(self, url, destination, **kwargs):
+            # An interrupted download may already have written partial bytes.
+            destination.write_bytes(b'partial')
+            return super().fetch_file(url, destination, **kwargs)
+
+    assert check(upstream)[0] == 0
+    system = InterruptedSystem()
+    system.time += timedelta(hours=13)
+    code, document = check(system)
+    assert code == 1
+    assert document == {'latest': '2026.8.2115.0', 'verified_at': '2026-10-02T00:00:00Z',
+                        'attempted_at': '2026-10-02T13:00:00Z', 'last_error': 'network'}
+    assert all(not path.exists() for path in system.scratch)
+    if source.startswith('pool/'):
+        assert system.scratch
+        assert {path.name for path in system.cache_dir.iterdir()} == {'update.json'}
+    # A new boundary instance reads only the persisted cache, as after a shell restart.
+    restarted = UpdateSystem(upstream.cache_dir.parent, b'', b'')
+    restarted.time = system.time
+    assert status(restarted)['update'] == {
+        'latest': '2026.8.2115.0', 'verified_at': '2026-10-02T00:00:00Z',
+        'available': False, 'last_error': 'network', 'due': False}
+    system.interrupt = False
+    system.time += timedelta(seconds=1)
+    code, document = check(system)
+    assert code == 0
+    assert document == {'latest': '2026.8.2115.0', 'verified_at': '2026-10-02T13:00:01Z',
+                        'attempted_at': '2026-10-02T13:00:01Z', 'last_error': None}
+    assert status(restarted)['update']['last_error'] is None
+    assert all(not path.exists() for path in system.scratch)

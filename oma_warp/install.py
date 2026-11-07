@@ -6,7 +6,7 @@ from .client import gather
 from .jobs import run_job
 from .packaging import PackagingError, prepare_build, build_package
 from .repository import Repository, RepositoryError
-from .update import timestamp
+from .update import successful_cache, timestamp
 
 
 def build_and_install(system, release, deb, scratch):
@@ -35,9 +35,7 @@ def install(system, job_id):
                     scratch = Path(directory)
                     deb = repository.download(release, scratch)
                     now = timestamp(system.now())
-                    system.write_json(system.cache_dir / 'update.json', {
-                        'latest': release.version, 'verified_at': now,
-                        'attempted_at': now, 'last_error': None})
+                    system.write_json(system.cache_dir / 'update.json', successful_cache(release, now))
                     code = build_and_install(system, release, deb, scratch)
                     if code:
                         system.write('Could not install the WARP package.')
