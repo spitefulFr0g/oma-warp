@@ -49,7 +49,8 @@ var PYTHON = "/usr/bin/python3"
 var COMMANDS = {
   status: ["status", "--json"],
   connect: ["connect"],
-  disconnect: ["disconnect"]
+  disconnect: ["disconnect"],
+  check: ["check", "--json"]
 }
 
 // Qt.resolvedUrl(".") from the plugin folder, as a filesystem path.
@@ -173,6 +174,30 @@ function isJob(value) {
     && typeof value.started_at === "string" && !isNaN(Date.parse(value.started_at)))
 }
 
+// Versions in the backend's own shape, short enough for one line. Anything
+// else never reaches a sink.
+var VERSION = /^[0-9]+(?:\.[0-9]+)+(?:-[0-9]+)?$/
+var CHECK_ERRORS = [null, "network", "verification"]
+
+function isVersion(value) {
+  return typeof value === "string" && value.length <= 40 && VERSION.test(value)
+}
+
+function isTime(value) {
+  return typeof value === "string" && !isNaN(Date.parse(value))
+}
+
+// The backend's update verdict: a newer release is only ever claimed with
+// both versions known.
+function isUpdate(value, installed) {
+  if (!isObject(value) || typeof value.due !== "boolean") return false
+  if (value.latest !== null && !isVersion(value.latest)) return false
+  if (value.verified_at !== null && !isTime(value.verified_at)) return false
+  if (CHECK_ERRORS.indexOf(value.last_error) < 0) return false
+  if (value.available === true) return value.latest !== null && installed !== null
+  return value.available === false || value.available === null
+}
+
 // `status --json` output is untrusted text. Anything that is not a schema-1
 // document this Panel understands answers null: the backend is broken.
 function parseStatus(text) {
@@ -184,6 +209,8 @@ function parseStatus(text) {
   }
   if (!isObject(doc) || doc.schema !== 1 || !isObject(doc.client)) return null
   if (CONNECTIONS.indexOf(doc.client.connection) < 0) return null
+  if (doc.client.version !== null && !isVersion(doc.client.version)) return null
+  if (!isUpdate(doc.update, doc.client.version)) return null
   if (!isProblemList(doc.problems)) return null
   if (!isJob(doc.job)) return null
   return doc
@@ -194,12 +221,18 @@ var META = { disconnected: "meta.off", connecting: "meta.connecting", connected:
 // A running Job is calm, never crossed out, even over the Problem it fixes.
 // Otherwise any Problem crosses the cloud out. Connected earns the outlined
 // cloud until a probe confirms Through Cloudflare; everything else is the
-// full cloud, dimmed.
-function barIcon(connection, job, problem) {
-  if (job) return { glyph: CLOUD, opacity: DIMMED }
-  if (problem) return { glyph: CLOUD_OFF, opacity: 1 }
-  if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1 }
-  return { glyph: CLOUD, opacity: DIMMED }
+// full cloud, dimmed. Whatever the cloud, a dot says a verified newer
+// release is waiting.
+function barIcon(connection, job, problem, dot) {
+  if (job) return { glyph: CLOUD, opacity: DIMMED, dot: dot }
+  if (problem) return { glyph: CLOUD_OFF, opacity: 1, dot: dot }
+  if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1, dot: dot }
+  return { glyph: CLOUD, opacity: DIMMED, dot: dot }
+}
+
+// The backend compares versions; the Panel only reads its verdict.
+function updateAvailable(doc) {
+  return !!doc && doc.update.available === true
 }
 
 function heroMeta(connection, job, problem) {
@@ -226,6 +259,58 @@ function primaryButton(problem, broken) {
   return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired }
 }
 
+// The update row: the line and versions, and its own Update button. It
+// holds the primary slot unless a fix or a needed restart outranks it. The
+// button has no action yet, so it launches nothing until the Update Job is
+// wired.
+function updateRow(doc, fix, broken) {
+  if (!updateAvailable(doc)) return null
+  return {
+    line: message("update.line"),
+    versions: message("update.versions", { from: doc.client.version, to: doc.update.latest }),
+    primary: !fix && doc.client.restart_needed !== true,
+    button: { label: message("update.button"), enabled: !broken }
+  }
+}
+
+var CHECK_PERIOD = 12 * 3600 * 1000
+// `check --json` runs beside status, never in its way, and gets this long.
+var CHECK_DEADLINE = 30000
+
+// `check --json` prints the attempt it recorded: exit 0 with no error when
+// it verified a release, 1 with the error when the check failed. Anything
+// else (cut off, a crash, never started) recorded no attempt at all. The
+// output is untrusted and only ever read for this.
+function checkAbandoned(exitCode, text) {
+  if (exitCode !== 0 && exitCode !== 1) return true
+  var attempt
+  try {
+    attempt = JSON.parse(String(text))
+  } catch (e) {
+    return true
+  }
+  if (!isObject(attempt) || !isTime(attempt.attempted_at)) return true
+  if (CHECK_ERRORS.indexOf(attempt.last_error) < 0) return true
+  return (attempt.last_error === null) !== (exitCode === 0)
+}
+
+// A check the Panel had to abandon (cut off at its deadline, or dead before
+// it could record its attempt) holds the next one off for the same 12 h a
+// recorded attempt would.
+function recentlyAbandoned(at, now) {
+  return typeof at === "number" && isFinite(at) && now.getTime() - at < CHECK_PERIOD
+}
+
+// When the backend says a check is due, auto-check is on (anything but an
+// explicit false, as it defaults to on) and no check is in flight,
+// `check --json` runs in the background. A stale document says nothing is
+// due, and a live Job is left alone.
+function backgroundCheck(doc, flags, now) {
+  return !!doc && !doc.job && flags.backendError !== true && doc.update.due === true
+    && flags.autoCheck !== false && flags.checkInFlight !== true
+    && !recentlyAbandoned(flags.checkAbandonedAt, now)
+}
+
 function view(doc, flags, now) {
   flags = flags || ({})
   var connection = doc ? doc.client.connection : null
@@ -236,14 +321,18 @@ function view(doc, flags, now) {
   var on = connection === "connected" || connection === "connecting"
   var inFlight = flags.toggleInFlight === "connect" || flags.toggleInFlight === "disconnect" ? flags.toggleInFlight : null
   var broken = flags.backendError === true
+  var fix = primaryButton(problem, broken)
+  var update = job ? null : updateRow(doc, fix, broken)
   return {
     greyed: broken,
     banner: broken ? message("backendError") : null,
-    bar: barIcon(connection, job, problem),
+    bar: barIcon(connection, job, problem, updateAvailable(doc)),
     hero: { title: message("title"), meta: message(heroMeta(connection, job, problem)) },
     note: job ? jobNote(job, now) : problem ? problemNote(problem) : null,
     ip: { visible: !job && !(problem && problem.blocking) },
-    primary: primaryButton(problem, broken),
+    primary: fix || (update && update.primary ? update.button : null),
+    update: update,
+    check: { start: backgroundCheck(doc, flags, now) },
     toggle: {
       checked: inFlight ? inFlight === "connect" : on,
       enabled: known && !job && !inFlight && !broken,
