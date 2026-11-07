@@ -164,3 +164,20 @@ def test_restart_discards_probe_from_previous_service_lifetime():
     assert status(system)['probe'] == probe
     assert main(['restart', '--job-id', 'fresh-service'], system=system) == 0
     assert status(system)['probe'] is None
+
+
+def test_single_connect_fallback_observes_asynchronous_connection():
+    class AsyncFallback(RestartSystem):
+        def run(self, argv, *, timeout):
+            if argv == ['warp-cli', 'connect']:
+                self.commands.append(argv)
+                self.outputs[('warp-cli', '-j', 'status')] = '{"status":"Connecting"}'
+                self.restored = 'Connected'
+                self.restore_after = self.elapsed + 2
+                return CompletedProcess(argv, 0, '', '')
+            return super().run(argv, timeout=timeout)
+    system = AsyncFallback(restored='Disconnected')
+    assert main(['restart', '--job-id', 'async-fallback'], system=system) == 0
+    assert system.commands == [['sudo', 'systemctl', 'restart', 'warp-svc'], ['warp-cli', 'connect']]
+    assert system.elapsed <= 20
+    assert system.messages[-1] == 'Connected again'
