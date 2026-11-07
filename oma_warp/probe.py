@@ -1,9 +1,10 @@
-"""Bounded trace acquisition and connection-scoped runtime cache."""
+"""Bounded concurrent trace/DNS acquisition and connection-scoped cache."""
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import http.client
 import subprocess
 import json
+import re
 from queue import Empty, Queue
 from threading import Thread
 
@@ -37,7 +38,8 @@ def cached_probe(system, facts):
         probe = record.get('probe')
         if (isinstance(probe, dict) and set(probe) == {'checked_at', 'trace', 'ip', 'colo', 'country', 'dns'}
                 and probe['trace'] in ('through', 'outside', 'failed')):
-            return probe
+            return probe | {'dns': probe['dns'] if facts.operation_mode == 'warp'
+                            and facts.client['connection'] == 'connected' else None}
     invalidate(system)
     return None
 
@@ -91,19 +93,83 @@ def trace(system):
     return result
 
 
+def warp_mode(system):
+    try:
+        result = system.run(COMMANDS['settings'], timeout=0.2)
+        settings = document(result.stdout).get('settings') if result.returncode == 0 else None
+        return isinstance(settings, dict) and settings.get('operation_mode') == 'warp'
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def dns_read(system, argv):
+    try:
+        return system.run(argv, timeout=4)
+    except subprocess.TimeoutExpired:
+        return 'timeout'
+    except OSError:
+        return None
+
+
+def dns(answers, domains):
+    if answers == 'timeout' or (answers is not None and answers.returncode == 124):
+        return 'broken'
+    if answers is not None and answers.returncode == 2:
+        return 'bypassed'
+    if (answers is None or answers.returncode != 0 or domains is None
+            or domains == 'timeout' or domains.returncode != 0):
+        return None
+    rows = [line.split() for line in answers.stdout.splitlines() if line.strip()]
+    if not rows or any(len(row) not in (2, 3) or row[0] not in ('127.0.2.2', '127.0.2.3')
+                       or row[1] not in ('STREAM', 'DGRAM', 'RAW')
+                       or (len(row) == 3 and row[2] != 'connectivity-check.warp-svc') for row in rows):
+        return None
+    claims = []
+    seen = set()
+    for line in domains.stdout.splitlines():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r'(Global|Link [0-9]+ \([^()]+\)):\s*(.*)', line)
+        if match is None or match[1] in seen:
+            return None
+        seen.add(match[1])
+        if '~.' in match[2].split():
+            claims.append(match[1])
+    if not seen:
+        return None
+    if any(claim != 'Global' and claim.endswith(' (CloudflareWARP)') for claim in claims):
+        return 'ok' if len(claims) == 1 else 'shared'
+    return 'shared' if claims else None
+
+
 def probe_status(system):
     before = identity(system)
+    # A short mode read keeps the four-second checks concurrent with gather.
+    # Together with the two identity snapshots, it reserves 0.4 s for status
+    # assembly (including the bounded version comparison) under the 5 s limit.
+    check_dns = before is not None and before['connection'] == 'connected' and warp_mode(system)
     started = system.monotonic()
-    pending = Queue(maxsize=1)
+    pending = Queue(maxsize=3)
     # urllib's socket timeout is not a total deadline (a server can trickle
     # bytes). A daemon worker cannot hold the command open after the budget.
     # The worker only returns data; it can never publish a late cache entry.
-    Thread(target=lambda: pending.put(trace(system)), daemon=True).start()
+    Thread(target=lambda: pending.put(('trace', trace(system))), daemon=True).start()
+    if check_dns:
+        Thread(target=lambda: pending.put(('answers', dns_read(system,
+            ['timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc']))), daemon=True).start()
+        Thread(target=lambda: pending.put(('domains', dns_read(system,
+            ['resolvectl', 'domain']))), daemon=True).start()
     facts = gather(system)
-    try:
-        result = pending.get(timeout=max(0, 4 - (system.monotonic() - started)))
-    except Empty:
-        result = failed(system)
+    results = {}
+    for _ in range(3 if check_dns else 1):
+        try:
+            key, value = pending.get(timeout=max(0, 4 - (system.monotonic() - started)))
+            results[key] = value
+        except Empty:
+            break
+    result = results.get('trace', failed(system))
+    if check_dns and facts.operation_mode == 'warp' and facts.client['connection'] == 'connected':
+        result['dns'] = dns(results.get('answers', 'timeout'), results.get('domains'))
     after = identity(system)
     if before is None or before != tag(facts) or before != after:
         invalidate(system)

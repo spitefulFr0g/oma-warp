@@ -39,6 +39,9 @@ def violations(text):
             address = ipaddress.ip_address(candidate.rstrip('.'))
         except ValueError:
             continue
+        # Fixed answers of WARP's connectivity-check DNS protocol, not host IPs.
+        if candidate in ('127.0.2.2', '127.0.2.3'):
+            continue
         if not any(address in network for network in PLACEHOLDERS):
             yield 'IP address'
 

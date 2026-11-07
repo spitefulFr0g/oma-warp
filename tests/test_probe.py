@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 import unittest
 
 from oma_warp.cli import main
@@ -16,13 +17,15 @@ class ProbeSystem(FakeSystem):
         self.files = {}
         self.body = b'ip=203.0.113.7\ncolo=XXX\nloc=XX\nwarp=on\n'
         self.fetches = []
+        self.outputs[('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')] = OSError('unavailable')
+        self.outputs[('resolvectl', 'domain')] = OSError('unavailable')
 
     def monotonic(self):
         import time
         return time.monotonic()
 
     def run(self, argv, *, timeout):
-        assert timeout in (0.2, 1.5)
+        assert timeout in (0.2, 1.5, 4)
         return super().run(argv, timeout=1.5)
 
     def fetch(self, url, *, timeout, limit):
@@ -174,3 +177,182 @@ class ProbeTests(unittest.TestCase):
         system = RestartingSystem()
         self.assertIsNone(status(system, True)['probe'])
         self.assertIsNone(status(system)['probe'])
+
+
+class DnsSystem(ProbeSystem):
+    def __init__(self):
+        super().__init__()
+        self.outputs[('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')] = (
+            '127.0.2.2 STREAM connectivity-check.warp-svc\n'
+            '127.0.2.3 DGRAM\n127.0.2.2 RAW\n')
+        self.outputs[('resolvectl', 'domain')] = 'Global:\nLink 7 (CloudflareWARP): ~.\nLink 2 (eth0): example.test\n'
+
+    def run(self, argv, *, timeout):
+        if argv[0] in ('timeout', 'resolvectl'):
+            assert 0 < timeout <= 4
+            return FakeSystem.run(self, argv, timeout=1.5)
+        return super().run(argv, timeout=timeout)
+
+
+class DnsTests(unittest.TestCase):
+    def test_warp_dns_answers_and_exclusive_domain_claim_are_ok(self):
+        system = DnsSystem()
+        doc = status(system, True)
+        self.assertEqual(doc['probe']['dns'], 'ok')
+        self.assertEqual(doc['problems'], [])
+        self.assertEqual(status(system)['probe']['dns'], 'ok')
+        assert_contract(self, doc)
+
+    def test_dns_problems_follow_routing_and_have_the_specified_fixes(self):
+        from subprocess import TimeoutExpired
+        for verdict, answer, domain, fix in (
+            ('broken', TimeoutExpired('getent', 4), None, None),
+            ('broken', CompletedProcess([], 124, '', ''), None, None),
+            ('bypassed', CompletedProcess([], 2, '', ''), None, 'reconnect'),
+            ('shared', None, 'Global: ~.\nLink 7 (CloudflareWARP): ~.\n', None),
+            ('shared', None, 'Global:\nLink 7 (CloudflareWARP): ~.\nLink 8 (tailscale0): ~.\n', None),
+        ):
+            with self.subTest(verdict=verdict, answer=answer, domain=domain):
+                system = DnsSystem()
+                if answer is not None:
+                    system.outputs[('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')] = answer
+                if domain is not None:
+                    system.outputs[('resolvectl', 'domain')] = domain
+                system.body = system.body.replace(b'warp=on', b'warp=off')
+                doc = status(system, True)
+                self.assertEqual(doc['probe']['dns'], verdict)
+                self.assertEqual(doc['problems'], [
+                    {'code': 'not_through_cloudflare', 'fix': 'reconnect', 'blocking': False},
+                    {'code': 'dns_' + verdict, 'fix': fix, 'blocking': False}])
+                assert_contract(self, doc)
+
+    def test_unexpected_dns_facts_stay_unknown(self):
+        from subprocess import TimeoutExpired
+        lookup = ('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')
+        for command, payload in (
+            (lookup, ''), (lookup, '203.0.113.7 STREAM connectivity-check.warp-svc\n'),
+            (lookup, '127.0.2.2 nonsense\n'), (lookup, '127.0.2.2 STREAM unexpected\n'),
+            (lookup, '127.0.2.2 STREAM\ngarbage\n'),
+            (lookup, CompletedProcess([], 1, '', 'unavailable')),
+            (lookup, OSError('missing tool')),
+            (('resolvectl', 'domain'), 'garbage'),
+            (('resolvectl', 'domain'), 'Global:\nLink 7 (CloudflareWARP):\n'),
+            (('resolvectl', 'domain'), 'Link 7 (CloudflareWARP): ~.\nmalformed'),
+            (('resolvectl', 'domain'), 'Link 7 (CloudflareWARP): ~.\nLink 7 (CloudflareWARP): ~.\n'),
+            (('resolvectl', 'domain'), TimeoutExpired('resolvectl', 4)),
+        ):
+            with self.subTest(command=command, payload=payload):
+                system = DnsSystem()
+                system.outputs[command] = payload
+                doc = status(system, True)
+                self.assertIsNone(doc['probe']['dns'])
+                self.assertEqual(doc['problems'], [])
+
+    def test_dns_is_not_queried_without_connected_warp_mode_and_cache_is_sanitized(self):
+        lookup = ('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')
+        for command, payload in (
+            (('warp-cli', '-j', 'status'), '{"status":"Disconnected"}'),
+            (('warp-cli', '-j', 'status'), '{"status":"Connecting"}'),
+            (('warp-cli', '-j', 'settings'), '{"settings":{"operation_mode":"doh"}}'),
+            (('warp-cli', '-j', 'settings'), '{"settings":{"operation_mode":"warp+doh"}}'),
+            (('warp-cli', '-j', 'settings'), '{"settings":[]}'),
+            (('warp-cli', '-j', 'settings'), '{"settings":{"operation_mode":false}}'),
+        ):
+            with self.subTest(payload=payload):
+                system = DnsSystem()
+                self.assertEqual(status(system, True)['probe']['dns'], 'ok')
+                system.outputs[command] = payload
+                system.outputs[lookup] = AssertionError('DNS must not be queried')
+                system.outputs[('resolvectl', 'domain')] = AssertionError('DNS must not be queried')
+                cached = status(system)['probe']
+                self.assertTrue(cached is None or cached['dns'] is None)
+                self.assertIsNone(status(system, True)['probe']['dns'])
+
+    def test_dns_and_trace_run_together_and_omarchy_dns_over_tls_is_not_a_problem(self):
+        import threading
+        class ConcurrentSystem(DnsSystem):
+            barrier = threading.Barrier(3)
+            def fetch(self, *args, **kwargs):
+                self.barrier.wait(timeout=1)
+                return super().fetch(*args, **kwargs)
+            def run(self, argv, *, timeout):
+                if argv[0] in ('timeout', 'resolvectl'):
+                    self.barrier.wait(timeout=1)
+                return super().run(argv, timeout=timeout)
+            def read_text(self, path):
+                if str(path).endswith('resolved.conf'):
+                    return '# Managed by omarchy-dns\nDNSOverTLS=yes\n'
+                return super().read_text(path)
+        doc = status(ConcurrentSystem(), True)
+        self.assertEqual(doc['probe']['dns'], 'ok')
+        self.assertEqual(doc['problems'], [])
+
+    def test_dns_has_total_deadline_and_late_workers_cannot_publish(self):
+        import threading
+        import time
+        class SlowSystem(DnsSystem):
+            release = threading.Event()
+            finished = threading.Event()
+            def run(self, argv, *, timeout):
+                if argv[0] == 'timeout':
+                    self.release.wait(timeout=8)
+                    self.finished.set()
+                return super().run(argv, timeout=timeout)
+        system = SlowSystem()
+        started = time.monotonic()
+        doc = status(system, True)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(doc['probe']['dns'], 'broken')
+        self.assertEqual(doc['probe']['trace'], 'through')
+        system.outputs[('warp-cli', '-j', 'status')] = '{"status":"Disconnected"}'
+        self.assertIsNone(status(system)['probe'])
+        system.release.set()
+        self.assertTrue(system.finished.wait(timeout=1))
+        system.outputs[('warp-cli', '-j', 'status')] = '{"status":"Connected"}'
+        self.assertIsNone(status(system)['probe'])
+
+    def test_blocking_problem_is_alone_with_dns_and_routing_failures(self):
+        system = DnsSystem()
+        system.body = system.body.replace(b'warp=on', b'warp=off')
+        system.outputs[('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')] = CompletedProcess([], 2, '', '')
+        system.outputs[('warp-cli', '-j', 'registration', 'show')] = CompletedProcess([], 1, '{"error":"MissingRegistration"}', '')
+        doc = status(system, True)
+        self.assertEqual(doc['problems'], [{'code': 'not_registered', 'fix': 'register', 'blocking': True}])
+        self.assertIsNone(doc['probe'])
+        assert_contract(self, doc)
+
+
+    def test_resolver_inspection_deadline_does_not_claim_dns_lookup_failed(self):
+        import threading
+        class SlowDomains(DnsSystem):
+            release = threading.Event()
+            def run(self, argv, *, timeout):
+                if argv[0] == 'resolvectl':
+                    self.release.wait(timeout=8)
+                return super().run(argv, timeout=timeout)
+        system = SlowDomains()
+        try:
+            doc = status(system, True)
+            self.assertIsNone(doc['probe']['dns'])
+            self.assertEqual(doc['problems'], [])
+        finally:
+            system.release.set()
+
+    def test_backend_reproduces_dns_and_multi_fixtures(self):
+        for name, verdict in (('dns_broken', 'broken'), ('dns_bypassed', 'bypassed'),
+                              ('dns_shared', 'shared'), ('multi', 'bypassed')):
+            with self.subTest(fixture=name):
+                system = DnsSystem()
+                lookup = ('timeout', '4', 'getent', 'ahostsv4', 'connectivity-check.warp-svc')
+                if verdict == 'broken':
+                    system.outputs[lookup] = CompletedProcess([], 124, '', '')
+                elif verdict == 'bypassed':
+                    system.outputs[lookup] = CompletedProcess([], 2, '', '')
+                else:
+                    system.outputs[('resolvectl', 'domain')] += 'Link 8 (tailscale0): ~.\n'
+                if name == 'multi':
+                    system.body = system.body.replace(b'warp=on', b'warp=off')
+                doc = status(system, True)
+                expected = json.loads((Path(__file__).parent / 'fixtures' / (name + '.json')).read_text())
+                self.assertEqual(doc, expected)
+                assert_contract(self, doc)
