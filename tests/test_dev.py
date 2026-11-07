@@ -49,8 +49,58 @@ class GateTests(unittest.TestCase):
             for failure in ('', 'python3', 'qmllint', 'qmltestrunner', 'omarchy', 'scrub'):
                 log.unlink(missing_ok=True)
                 result = subprocess.run(['/usr/bin/python3', '-B', str(root / 'dev/check')],
-                                        env={**os.environ, 'PATH': str(bindir), 'GATE_LOG': str(log), 'FAIL_STEP': failure},
+                                        env={**os.environ, 'PATH': str(bindir), 'OMA_WARP_QT_BIN': str(bindir),
+                                             'GATE_LOG': str(log), 'FAIL_STEP': failure},
                                         capture_output=True)
                 with self.subTest(failure=failure):
                     self.assertEqual(result.returncode, int(bool(failure)), result.stderr)
                     self.assertEqual(log.read_text().splitlines(), ['python3', 'qmllint', 'qmltestrunner', 'omarchy', 'scrub'])
+
+    def test_qml_steps_use_strict_qt6_tools_against_the_omarchy_shell(self):
+        import json
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'dev').mkdir()
+            (root / 'tests/qml').mkdir(parents=True)
+            (root / 'Panel.qml').write_text('// test input\n')
+            (root / 'tests/qml/tst_logic.qml').write_text('// test input\n')
+            shutil.copyfile(ROOT / 'dev/check', root / 'dev/check')
+            shell = root / 'omarchy/shell'
+            (shell / 'Ui').mkdir(parents=True)
+            (shell / 'Ui/qmldir').write_text('module qs.Ui\n')
+            qt, other = root / 'qt6', root / 'bin'
+            qt.mkdir()
+            other.mkdir()
+            recorder = (
+                '#!/usr/bin/python3\nimport json, os, sys\n'
+                'args = sys.argv[1:]\n'
+                'imports = [args[i + 1] for i, a in enumerate(args) if a == "-I"]\n'
+                'record = {"args": args, "platform": os.environ.get("QT_QPA_PLATFORM"),\n'
+                '          "shell": [os.path.isfile(os.path.join(d, "qs/Ui/qmldir")) for d in imports]}\n'
+                'with open(os.environ["GATE_LOG"], "a") as log:\n'
+                '    log.write(json.dumps([os.path.basename(sys.argv[0]), record]) + "\\n")\n'
+            )
+            for directory, names in ((qt, ('qmllint', 'qmltestrunner')),
+                                     (other, ('python3', 'omarchy', 'qmllint', 'qmltestrunner'))):
+                for name in names:
+                    path = directory / name
+                    path.write_text(recorder if directory == qt else '#!/bin/sh\n[ "${0##*/}" != qmllint ] && [ "${0##*/}" != qmltestrunner ]\n')
+                    path.chmod(0o755)
+            (root / 'dev/scrub').write_text('#!/bin/sh\n')
+            (root / 'dev/scrub').chmod(0o755)
+            log = root / 'calls'
+            result = subprocess.run(['/usr/bin/python3', '-B', str(root / 'dev/check')],
+                                    env={**os.environ, 'PATH': str(other), 'OMA_WARP_QT_BIN': str(qt),
+                                         'OMARCHY_PATH': str(root / 'omarchy'), 'GATE_LOG': str(log)},
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = dict(json.loads(line) for line in log.read_text().splitlines())
+            lint = calls['qmllint']
+            self.assertEqual(lint['args'][lint['args'].index('--max-warnings') + 1], '0')
+            self.assertEqual(lint['shell'], [True])
+            self.assertIn('Panel.qml', lint['args'])
+            self.assertIn('tests/qml/tst_logic.qml', lint['args'])
+            runner = calls['qmltestrunner']
+            self.assertEqual(runner['args'][:2], ['-input', 'tests'])
+            self.assertEqual(runner['platform'], 'offscreen')

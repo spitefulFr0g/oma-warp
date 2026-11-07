@@ -1,0 +1,8 @@
+{
+  "title": "Cloudflare WARP",
+  "backendError": "Couldn't read WARP status",
+  "meta.connecting": "Connecting",
+  "meta.off": "Off",
+  "meta.unconfirmed": "Connected · not confirmed",
+  "meta.unknown": "State unknown"
+}
