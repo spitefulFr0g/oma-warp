@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
@@ -9,7 +10,8 @@ import "PanelLogic.js" as Logic
 
 // The bar icon and the Panel. Every decision lives in PanelLogic.js; this file
 // runs the backend from its allow-list, holds the flags, and binds to the
-// logic's output. Backend text only ever reaches plain-text sinks.
+// logic's output. Backend text only ever reaches plain-text sinks. Jobs run
+// detached in a floating terminal; their record only prompts a re-poll.
 Panel {
   id: root
   moduleName: "spitefulfr0g.oma-warp"
@@ -40,6 +42,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family // qmllint disable missing-property
   readonly property int displaySize: Style.font.display // qmllint disable missing-property
   readonly property int noteSize: Style.font.bodySmall // qmllint disable missing-property
+  readonly property int bodySize: Style.font.body // qmllint disable missing-property
+  readonly property color dim: Qt.darker(root.foreground, 1.4)
 
   Commons.Translations {
     id: strings
@@ -47,7 +51,7 @@ Panel {
   }
 
   function say(message) {
-    return message ? Logic.format(strings.t(message.key), message.args) : ""
+    return message ? Logic.resolve(message, function(key) { return strings.t(key) }) : ""
   }
 
   function poll() {
@@ -104,6 +108,15 @@ Panel {
     poll()
   }
 
+  // The Panel closes first so the terminal gets the user's attention; the
+  // terminal is never a child of this Panel.
+  function launchJob() {
+    var argv = Logic.jobLaunch(pluginDir, view.primary, Logic.jobId(Date.now(), Math.random()))
+    if (!argv) return
+    root.close()
+    Quickshell.execDetached(argv)
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -149,6 +162,13 @@ Panel {
     interval: 15000
     onTriggered: if (toggleProcess.running) toggleProcess.signal(9)
                  else root.toggleFinished()
+  }
+
+  // A Job writes job.json as it starts and removes it as it ends: either
+  // change re-polls at once.
+  JobRecordWatch {
+    runtimeDir: Quickshell.env("XDG_RUNTIME_DIR")
+    onPollNeeded: root.poll()
   }
 
   Timer {
@@ -254,6 +274,103 @@ Panel {
               onToggled: root.flipSwitch()
             }
           }
+        }
+
+        // A Problem: its bold urgent line and the one-line explanation.
+        Column {
+          visible: root.view.note !== null && root.view.note.kind === "problem"
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          spacing: Style.space(2)
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.view.note ? root.say(root.view.note.line) : ""
+            color: Commons.Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+            font.bold: true
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.view.note ? root.say(root.view.note.detail) : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: root.noteSize
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // The live Job: what it does, and that it runs in a terminal.
+        BorderSurface {
+          visible: root.view.note !== null && root.view.note.kind === "job"
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          implicitHeight: jobColumn.implicitHeight + Style.space(16)
+          color: Qt.alpha(Commons.Color.accent, 0.08)
+          borderSpec: Border.controlSpec("normal", root.foreground, Commons.Color.accent)
+          radius: Style.cornerRadius
+
+          Text {
+            id: jobGlyph
+            textFormat: Text.PlainText
+            anchors.left: parent.left
+            anchors.top: jobColumn.top
+            anchors.leftMargin: Style.space(10)
+            text: "⟳"
+            color: Commons.Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+            font.bold: true
+          }
+
+          Column {
+            id: jobColumn
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: jobGlyph.right
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(9)
+            anchors.rightMargin: Style.space(10)
+            spacing: Style.space(4)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.note ? root.say(root.view.note.line) : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: root.bodySize
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.note ? root.say(root.view.note.detail) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: root.noteSize
+              wrapMode: Text.WordWrap
+            }
+          }
+        }
+
+        // The one thing to do now.
+        Button {
+          visible: root.view.primary !== null
+          width: parent.width
+          bordered: true
+          active: true
+          enabled: root.view.primary !== null && root.view.primary.enabled
+          opacity: enabled ? 1 : 0.35
+          text: root.view.primary ? root.say(root.view.primary.label) : ""
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.launchJob()
         }
       }
     }

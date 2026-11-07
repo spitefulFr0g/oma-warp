@@ -3,6 +3,20 @@
   "backendError": "Couldn't read WARP status",
   "meta.connecting": "Connecting",
   "meta.off": "Off",
+  "meta.problem": "Needs attention",
+  "meta.job": "Working in a terminal",
   "meta.unconfirmed": "Connected · not confirmed",
-  "meta.unknown": "State unknown"
+  "meta.unknown": "State unknown",
+  "problem.service_stopped": "The WARP service is stopped",
+  "why.service_stopped": "The background service isn't running, so WARP can't connect.",
+  "fix.start": "Start service",
+  "job.install": "Installing WARP…",
+  "job.update": "Updating WARP…",
+  "job.restart": "Restarting the WARP service…",
+  "job.start": "Starting the WARP service…",
+  "job.register": "Registering this device…",
+  "job.hint": "In a terminal · started {ago}",
+  "time.s": "{n} s ago",
+  "time.min": "{n} min ago",
+  "time.h": "{n} h ago"
 }
