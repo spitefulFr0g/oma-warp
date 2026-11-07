@@ -1,0 +1,37 @@
+#!/usr/bin/python3 -B
+"""Run every merge gate, reporting all failures in one invocation."""
+import os
+from pathlib import Path
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main():
+    qml = sorted(str(path.relative_to(ROOT)) for path in ROOT.rglob('*.qml') if '.git' not in path.parts)
+    qml_tests = sorted(ROOT.rglob('tst_*.qml'))
+    steps = [
+        ('pytest', ['python3', '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider']),
+        ('qmllint', ['qmllint', *qml] if qml else None),
+        ('qmltestrunner', ['qmltestrunner', '-input', 'tests'] if qml_tests else None),
+        ('manifest', ['omarchy', 'plugin', 'validate', str(ROOT)]),
+        ('scrub', [str(ROOT / 'dev/scrub')]),
+    ]
+    failed = False
+    for name, command in steps:
+        print(f'== {name} ==', flush=True)
+        if command is None:
+            print('No inputs yet; passed.')
+            continue
+        try:
+            result = subprocess.run(command, cwd=ROOT, check=False,
+                                    env={**os.environ, 'QML_XHR_ALLOW_FILE_READ': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
+            failed |= result.returncode != 0
+        except OSError as error:
+            print(f'{name}: {error.strerror}', flush=True)
+            failed = True
+    return int(failed)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

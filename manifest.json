@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "spitefulfr0g.oma-warp",
+  "name": "Cloudflare WARP",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "Cloudflare WARP status and verified client maintenance.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {"barWidget": "Panel.qml"},
+  "barWidget": {
+    "displayName": "Cloudflare WARP",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {"autoCheck": true},
+    "schema": [
+      {"key": "autoCheck", "type": "boolean", "label": "Check every 12 h"}
+    ]
+  }
+}
