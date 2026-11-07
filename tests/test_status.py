@@ -219,3 +219,50 @@ def test_hanging_sources_use_real_subprocess_deadlines_without_blanking_unrelate
         assert doc['client'] == baseline | changed
         if command == commands[0]:
             assert doc['problems'] == []
+
+
+def test_restart_needed_matches_shared_restart_fixture():
+    system = FakeSystem()
+    system.outputs[('pacman', '-Qi', 'cloudflare-warp-bin')] = 'Version : 2026.8.2115.0-1\nInstall Date : Thu Oct  1 12:00:00 2026\n'
+    system.outputs[('systemctl', 'show', 'warp-svc', '--property=ActiveState,ActiveEnterTimestamp')] = 'ActiveState=active\nActiveEnterTimestamp=Thu 2026-10-01 11:00:00 UTC\n'
+    expected = json.loads((Path(__file__).parent / 'fixtures/restart.json').read_text())
+    assert status(system) == expected
+
+
+def test_restart_timestamp_sources_use_utc_even_with_local_host_timezone(monkeypatch):
+    import sys
+    from oma_warp.system import System
+    # Exercise the actual command boundary with harmless local date-formatting
+    # processes, never host pacman/systemctl. The parent timezone must not leak
+    # into the package's timezone-less local Install Date.
+    monkeypatch.setenv('TZ', 'MST7')
+    monkeypatch.setenv('LC_ALL', 'C.UTF-8')
+    class LocalDateSystem(FakeSystem):
+        def run(self, argv, *, timeout):
+            if argv[0] in ('pacman', 'systemctl'):
+                script = (
+                    'import os, time; assert os.environ["LC_ALL"] == "C"; '
+                    'assert os.environ["TZ"] == "UTC"; '
+                    'time.tzset(); '
+                )
+                if argv[0] == 'pacman':
+                    script += 'print("Version : 2026.8.2115.0-1\\nInstall Date : " + time.strftime("%a %b %e %H:%M:%S %Y", time.localtime(1790856000)))'
+                else:
+                    script += 'print("ActiveState=active\\nActiveEnterTimestamp=" + time.strftime("%a %Y-%m-%d %H:%M:%S %Z", time.localtime(1790852400)))'
+                return System.run(self, [sys.executable, '-I', '-c', script], timeout=timeout)
+            return super().run(argv, timeout=timeout)
+    assert status(LocalDateSystem())['client']['restart_needed'] is True
+
+
+def test_restart_timestamp_equal_newer_missing_and_ambiguous_sources():
+    for installed, started, expected in (
+        ('Thu Oct  1 12:00:00 2026', 'Thu 2026-10-01 12:00:00 UTC', False),
+        ('Thu Oct  1 12:00:00 2026', 'Thu 2026-10-01 13:00:00 UTC', False),
+        ('Thu Oct  1 12:00:00 2026', '', None),
+        ('unknown', 'Thu 2026-10-01 11:00:00 UTC', None),
+        ('Thu Oct  1 12:00:00 2026', 'Thu 2026-10-01 11:00:00 MST', None),
+    ):
+        system = FakeSystem()
+        system.outputs[('pacman', '-Qi', 'cloudflare-warp-bin')] = f'Version : 2026.8.2115.0-1\nInstall Date : {installed}\n'
+        system.outputs[('systemctl', 'show', 'warp-svc', '--property=ActiveState,ActiveEnterTimestamp')] = f'ActiveState=active\nActiveEnterTimestamp={started}\n'
+        assert status(system)['client']['restart_needed'] is expected

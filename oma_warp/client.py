@@ -100,9 +100,13 @@ def document(text):
 def parse_time(value):
     if not value:
         return None
-    # System.run fixes both LC_ALL=C and TZ=UTC for these local sources.
+    # System.run fixes LC_ALL=C and TZ=UTC for these local sources.
+    # strptime's %Z also accepts the parent process's local timezone names;
+    # never relabel such an ambiguous/non-UTC timestamp as UTC.
     for pattern in ('%a %b %d %H:%M:%S %Y', '%a %Y-%m-%d %H:%M:%S %Z',
                     '%a %d %b %Y %H:%M:%S %Z'):
+        if '%Z' in pattern and value.rsplit(' ', 1)[-1] not in ('UTC', 'GMT'):
+            continue
         try:
             return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)
         except ValueError:
