@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import urllib.request
 
@@ -34,3 +35,32 @@ class System:
             if len(body) > limit:
                 raise ValueError('response too large')
             return body
+
+    @property
+    def plugin_dir(self):
+        # omarchy plugin remove uses this location, independent of XDG_CONFIG_HOME.
+        return Path.home() / '.config' / 'omarchy' / 'plugins' / 'spitefulfr0g.oma-warp'
+
+    def confirm(self, prompt):
+        return input(prompt + ' [y/N] ').strip().lower() in ('y', 'yes')
+
+    def write(self, message):
+        print(message, flush=True)
+
+    def run_terminal(self, argv):
+        # Inherit stdin/stdout/stderr and allow time for sudo or terms prompts.
+        return subprocess.run(argv, check=False,
+                              env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'})
+
+    def path_exists(self, path):
+        try:
+            path.lstat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def remove_tree(self, path):
+        if path.is_symlink():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
