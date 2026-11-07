@@ -1,0 +1,70 @@
+#!/usr/bin/python3 -B
+"""Reject personal facts in tracked and non-ignored product files.
+
+Diagnostics name the file, line and category, never the sensitive value.
+The required public plugin id and repository URL are identity exceptions.
+"""
+import getpass
+import ipaddress
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+PLACEHOLDERS = tuple(ipaddress.ip_network(value) for value in
+                     ('203.0.113.0/24', '198.51.100.0/24', '2001:db8::/32'))
+
+
+def violations(text):
+    # These are mandated public product identifiers, not local identity data.
+    text = text.replace('spitefulfr0g.oma-warp', '').replace('https://github.com/spitefulFr0g/oma-warp', '')
+    personal = {'username': os.environ.get('USER') or getpass.getuser(),
+                'hostname': os.uname().nodename, 'kernel': os.uname().release}
+    for category, value in personal.items():
+        if value and re.search(r'(?<![\w-])' + re.escape(value) + r'(?![\w-])', text):
+            yield category
+    if '/' + 'home/' in text:
+        yield 'home path'
+    for key, placeholder in (('colo', 'XXX'), ('loc', 'XX')):
+        if any(value != placeholder for value in re.findall(r'\b' + key + r'=([A-Za-z]+)', text)):
+            yield 'trace location'
+    for candidate in re.findall(r'(?<![\w.:])[0-9a-fA-F:.]+(?![\w.:])', text):
+        if '.' not in candidate and ':' not in candidate:
+            continue
+        try:
+            address = ipaddress.ip_address(candidate.rstrip('.'))
+        except ValueError:
+            continue
+        if not any(address in network for network in PLACEHOLDERS):
+            yield 'IP address'
+
+
+def main(paths):
+    if not paths:
+        result = subprocess.run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+                                cwd=ROOT, capture_output=True, check=True)
+        paths = [ROOT / os.fsdecode(name) for name in result.stdout.split(b'\0') if name]
+    failed = False
+    for path in sorted(set(map(Path, paths))):
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b'\0' in data:
+            print(f'{path.name}: binary content cannot be scrubbed', file=sys.stderr)
+            failed = True
+            continue
+        for number, line in enumerate(data.decode('utf-8', errors='replace').splitlines(), 1):
+            for category in set(violations(line)):
+                try:
+                    label = str(path.relative_to(ROOT))
+                except ValueError:
+                    label = path.name
+                print(f'{label}:{number}: {category}', file=sys.stderr)
+                failed = True
+    return int(failed)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv[1:]))

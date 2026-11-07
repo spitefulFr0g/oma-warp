@@ -1,0 +1,94 @@
+"""Shared Fixture contract; also consumed by the later Panel tests."""
+from datetime import datetime
+import ipaddress
+import json
+from pathlib import Path
+import unittest
+
+
+def assert_contract(test, doc):
+    test.assertEqual(set(doc), {'schema', 'observed_at', 'client', 'probe', 'update', 'job', 'problems'})
+    test.assertEqual(type(doc['schema']), int)
+    test.assertEqual(doc['schema'], 1)
+    def timestamp(value):
+        test.assertIsInstance(value, str)
+        test.assertIsNotNone(datetime.fromisoformat(value).utcoffset())
+    def nullable(value, kind):
+        test.assertTrue(value is None or type(value) is kind)
+    timestamp(doc['observed_at'])
+    client = doc['client']
+    test.assertEqual(set(client), {'version', 'service', 'restart_needed', 'daemon', 'registered', 'connection'})
+    nullable(client['version'], str)
+    nullable(client['restart_needed'], bool)
+    nullable(client['registered'], bool)
+    test.assertIn(client['service'], (None, 'running', 'stopped'))
+    test.assertIn(client['daemon'], (None, 'ok', 'unresponsive'))
+    test.assertIn(client['connection'], (None, 'connected', 'connecting', 'disconnected'))
+    if client['version'] is None:
+        for key in ('service', 'restart_needed', 'daemon', 'registered', 'connection'):
+            test.assertIsNone(client[key])
+    if client['service'] != 'running':
+        test.assertIsNone(client['daemon'])
+    if client['daemon'] != 'ok':
+        test.assertIsNone(client['registered'])
+        test.assertIsNone(client['connection'])
+    if client['registered'] is False:
+        test.assertIsNone(client['connection'])
+    probe = doc['probe']
+    if probe is not None:
+        test.assertEqual(set(probe), {'checked_at', 'trace', 'ip', 'colo', 'country', 'dns'})
+        timestamp(probe['checked_at'])
+        test.assertIn(probe['trace'], ('through', 'outside', 'failed'))
+        test.assertIn(probe['dns'], (None, 'ok', 'bypassed', 'broken', 'shared'))
+        for key in ('ip', 'colo', 'country'):
+            nullable(probe[key], str)
+            if probe['trace'] == 'failed':
+                test.assertIsNone(probe[key])
+        if probe['ip'] is not None:
+            ipaddress.ip_address(probe['ip'])
+        if client['connection'] != 'connected':
+            test.assertIsNone(probe['dns'])
+    update = doc['update']
+    test.assertEqual(set(update), {'latest', 'verified_at', 'available', 'last_error', 'due'})
+    nullable(update['latest'], str)
+    nullable(update['available'], bool)
+    test.assertIs(type(update['due']), bool)
+    test.assertIn(update['last_error'], (None, 'network', 'verification'))
+    if update['verified_at'] is not None:
+        timestamp(update['verified_at'])
+    if update['latest'] is None:
+        test.assertIsNone(update['verified_at'])
+    if update['latest'] is None or client['version'] is None:
+        test.assertIsNone(update['available'])
+    if doc['job'] is not None:
+        test.assertEqual(set(doc['job']), {'action', 'started_at'})
+        test.assertIn(doc['job']['action'], ('install', 'update', 'restart', 'start', 'register'))
+        timestamp(doc['job']['started_at'])
+    test.assertIsInstance(doc['problems'], list)
+    for problem in doc['problems']:
+        test.assertEqual(set(problem), {'code', 'fix', 'blocking'})
+        test.assertIn(problem['code'], ('not_installed', 'service_stopped', 'daemon_unresponsive', 'not_registered', 'not_through_cloudflare', 'dns_broken', 'dns_bypassed', 'dns_shared'))
+        test.assertIn(problem['fix'], (None, 'install', 'start', 'restart', 'register', 'reconnect'))
+        test.assertIs(type(problem['blocking']), bool)
+
+
+class ContractTests(unittest.TestCase):
+    def test_every_shared_fixture_conforms(self):
+        fixtures = list((Path(__file__).parent / 'fixtures').glob('*.json'))
+        self.assertTrue(fixtures)
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture.name):
+                assert_contract(self, json.loads(fixture.read_text()))
+
+    def test_contract_rejects_missing_keys_wrong_types_and_invalid_dependencies(self):
+        import copy
+        original = json.loads((Path(__file__).parent / 'fixtures/off.json').read_text())
+        for change in ('missing', 'enum', 'boolean', 'dependency', 'schema'):
+            doc = copy.deepcopy(original)
+            if change == 'missing': del doc['update']['due']
+            if change == 'enum': doc['client']['connection'] = 'online'
+            if change == 'boolean': doc['client']['registered'] = 1
+            if change == 'dependency': doc['client']['service'] = 'stopped'
+            if change == 'schema': doc['schema'] = True
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                assert_contract(self, doc)

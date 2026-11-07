@@ -1,0 +1,9 @@
+#!/usr/bin/env -S /usr/bin/python3 -I -B
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from oma_warp.cli import main
+
+if __name__ == '__main__':
+    raise SystemExit(main())
