@@ -751,20 +751,72 @@ TestCase {
              "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'restart' '--job-id' 'k9-x1'"])
   }
 
-  // Install shows as the fix, but its Job is not wired to the Panel yet:
-  // the button is there, disabled, and launches nothing even if asked to.
-  function test_fixes_without_a_wired_job_show_but_launch_nothing_data() {
+  // Install builds, installs and registers in the terminal, so pacman's
+  // confirmation and Cloudflare's terms prompt both work there.
+  function test_install_button_launches_the_install_job_in_a_terminal() {
+    var primary = viewOf("not_installed").primary
+    compare(say(primary.label), "Install")
+    compare(primary.enabled, true)
+    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'install' '--job-id' 'k9-x1'"])
+  }
+
+  function test_install_command_survives_any_plugin_folder() {
+    var primary = viewOf("not_installed").primary
+    compare(Logic.jobLaunch("/srv/it's $(here) `x`; a b", primary, "k9-x1")[1],
+            "'/usr/bin/python3' '-I' '-B' '/srv/it'\\''s $(here) `x`; a b/oma-warp' 'install' '--job-id' 'k9-x1'")
+  }
+
+  // Install is offered only from a live document, with a launchable id and
+  // the plugin folder known; otherwise it launches nothing.
+  function test_install_launches_nothing_unless_it_can_run_data() {
     return [
-      { tag: "Install", fixture: "not_installed", action: "install" },
+      { tag: "backend broken", flags: { backendError: true }, dir: "/srv/oma-warp", id: "k9-x1" },
+      { tag: "no plugin folder", dir: "", id: "k9-x1" },
+      { tag: "no job id", dir: "/srv/oma-warp", id: "" },
+      { tag: "job id not a string", dir: "/srv/oma-warp", id: 42 },
+      { tag: "job id like an option", dir: "/srv/oma-warp", id: "-k9" },
+      { tag: "job id in capitals", dir: "/srv/oma-warp", id: "K9-X1" },
+      { tag: "job id with shell text", dir: "/srv/oma-warp", id: "x' ; reboot '" },
     ]
   }
 
-  function test_fixes_without_a_wired_job_show_but_launch_nothing(row) {
-    var primary = viewOf(row.fixture).primary
-    compare(primary.action, row.action)
-    compare(primary.enabled, false)
-    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"), null)
-    compare(Logic.jobLaunch("/srv/oma-warp", { action: row.action, label: null, enabled: true }, "k9-x1"), null)
+  function test_install_launches_nothing_unless_it_can_run(row) {
+    var primary = viewOf("not_installed", row.flags).primary
+    compare(primary.action, "install")
+    compare(Logic.jobLaunch(row.dir, primary, row.id), null)
+  }
+
+  // While Install runs the Panel only reports it: no fix, no switch, no
+  // background check, even though nothing is installed and a check is due.
+  function test_while_install_runs_nothing_else_is_offered() {
+    var text = variant("not_installed", function(d) {
+      d.job = { action: "install", started_at: "2026-10-02T00:00:00Z" }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(say(v.note.line), "Installing WARP…")
+    compare(say(v.note.detail), "In a terminal · started 3 s ago")
+    compare(say(v.hero.meta), "Working in a terminal")
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 0.42)
+    compare(v.primary, null)
+    compare(v.update, null)
+    compare(v.toggle.enabled, false)
+    compare(v.ip.visible, false)
+    compare(v.check.start, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"), null)
+  }
+
+  // Nothing is installed, so there is no update to offer next to Install,
+  // and the backend's due check still runs beside it.
+  function test_install_holds_the_primary_slot_without_an_update_row() {
+    var v = viewOf("not_installed")
+    compare(v.update, null)
+    compare(v.bar.dot, false)
+    compare(v.primary.action, "install")
+    compare(v.check.start, true)
+    compare(viewOf("not_installed", { autoCheck: false }).check.start, false)
   }
 
   function test_nothing_launches_without_an_enabled_job_data() {
@@ -849,6 +901,7 @@ TestCase {
       d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
     })
     compare(Logic.jobLaunch("/srv/oma-warp", Logic.view(Logic.parseStatus(text), {}, now).update.button, "k9-x1"), null)
+    compare(Logic.jobLaunch("/srv/oma-warp", { action: "update", label: null, enabled: true }, "k9-x1"), null)
   }
 
   // Reconnect is a background command, not a terminal Job.
@@ -900,6 +953,7 @@ TestCase {
       { tag: "connecting, disconnecting", fixture: "connecting", inFlight: "disconnect", checked: false, meta: "Connecting" },
       { tag: "unconfirmed, disconnecting", fixture: "unconfirmed", inFlight: "disconnect", checked: false, meta: "Connected · not confirmed" },
       { tag: "connecting found it unregistered", fixture: "not_registered", inFlight: "connect", checked: true, meta: "Needs attention" },
+      { tag: "connecting found it not installed", fixture: "not_installed", inFlight: "connect", checked: true, meta: "Needs attention" },
       { tag: "disconnecting hung the daemon", fixture: "daemon_unresponsive", inFlight: "disconnect", checked: false, meta: "Needs attention" },
     ]
   }
