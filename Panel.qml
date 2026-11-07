@@ -11,7 +11,8 @@ import "PanelLogic.js" as Logic
 // The bar icon and the Panel. Every decision lives in PanelLogic.js; this file
 // runs the backend from its allow-list, holds the flags, and binds to the
 // logic's output. Backend text only ever reaches plain-text sinks. Jobs run
-// detached in a floating terminal; their record only prompts a re-poll.
+// detached in a floating terminal; their record only prompts a re-poll. The
+// update check runs beside status and never holds it up.
 Panel {
   id: root
   moduleName: "spitefulfr0g.oma-warp"
@@ -30,11 +31,28 @@ Panel {
   property bool pollClearsToggle: false
   property bool pollQueued: false
   property bool statusExited: false
+  // The background update check counts as in flight from its start until a
+  // status poll started after it ended has reported, so a poll that was
+  // already running when it ended can't start a second one.
+  property bool checkInFlight: false
+  property bool checkEnded: false
+  property bool pollClearsCheck: false
+  property bool checkCutOff: false
+  property bool checkExited: false
+  // When the Panel last abandoned a check that recorded no attempt.
+  property real checkAbandonedAt: NaN
 
-  readonly property var view: Logic.view(root.latest, {
-    toggleInFlight: root.toggleInFlight !== "" ? root.toggleInFlight : null,
-    backendError: root.backendError
-  }, new Date())
+  readonly property var view: Logic.view(root.latest, root.flags(), new Date())
+
+  function flags() {
+    return {
+      toggleInFlight: root.toggleInFlight !== "" ? root.toggleInFlight : null,
+      backendError: root.backendError,
+      checkInFlight: root.checkInFlight,
+      checkAbandonedAt: root.checkAbandonedAt,
+      autoCheck: root.setting("autoCheck", true)
+    }
+  }
 
   // The host types `bar` and `Style.font` as plain QtObjects, so their
   // members are read here once rather than unchecked all over the file.
@@ -66,6 +84,7 @@ Panel {
     }
     pollQueued = false
     pollClearsToggle = toggleEnded
+    pollClearsCheck = checkEnded
     statusExited = false
     statusProcess.command = argv
     statusProcess.running = true
@@ -86,6 +105,12 @@ Panel {
       toggleEnded = false
       pollClearsToggle = false
     }
+    if (pollClearsCheck) {
+      checkInFlight = false
+      checkEnded = false
+      pollClearsCheck = false
+    }
+    if (Logic.view(latest, flags(), new Date()).check.start) startCheck()
     // Deferred so the finished process has let go of `running`.
     if (pollQueued) Qt.callLater(root.poll)
   }
@@ -105,6 +130,30 @@ Panel {
     toggleWatchdog.stop()
     if (toggleInFlight === "" || toggleEnded) return
     toggleEnded = true
+    poll()
+  }
+
+  function startCheck() {
+    if (checkInFlight || checkProcess.running) return
+    var argv = Logic.backendCommand(pluginDir, "check")
+    if (!argv) return
+    checkInFlight = true
+    checkEnded = false
+    checkCutOff = false
+    checkExited = false
+    checkProcess.command = argv
+    checkProcess.running = true
+    checkDeadline.restart()
+  }
+
+  // The result is read from the next status poll; the check's own output
+  // only says whether it recorded an attempt at all.
+  function checkFinished(exitCode, crashed, text) {
+    checkDeadline.stop()
+    checkKill.stop()
+    if (!checkInFlight || checkEnded) return
+    if (Logic.checkAbandoned(checkCutOff || crashed ? -1 : exitCode, text)) checkAbandonedAt = Date.now()
+    checkEnded = true
     poll()
   }
 
@@ -147,6 +196,44 @@ Panel {
     id: statusWatchdog
     interval: 5000
     onTriggered: if (statusProcess.running) statusProcess.signal(9)
+  }
+
+  Process {
+    id: checkProcess
+    running: false
+    stdout: StdioCollector {
+      id: checkOutput
+      waitForEnd: true
+    }
+    onExited: function(exitCode, exitStatus) {
+      root.checkExited = true
+      root.checkFinished(exitCode, exitStatus !== 0, String(checkOutput.text || ""))
+    }
+    onRunningChanged: if (!running) Qt.callLater(function() {
+      if (!root.checkExited && !checkProcess.running) root.checkFinished(-1, true, "")
+    })
+  }
+
+  // At the deadline the check is interrupted, which still lets it remove
+  // its scratch download; one that ignores that is killed soon after.
+  Timer {
+    id: checkDeadline
+    interval: Logic.CHECK_DEADLINE
+    onTriggered: {
+      if (checkProcess.running) {
+        root.checkCutOff = true
+        checkProcess.signal(2)
+        checkKill.restart()
+      } else {
+        root.checkFinished(-1, true, "")
+      }
+    }
+  }
+
+  Timer {
+    id: checkKill
+    interval: 3000
+    onTriggered: if (checkProcess.running) checkProcess.signal(9)
   }
 
   Process {
@@ -193,6 +280,17 @@ Panel {
           color: button.foreground
           fontFamily: button.fontFamily
           fontSize: button.fontSize
+        }
+
+        // Maintenance is waiting: a small dot, top right, never dimmed.
+        Rectangle {
+          visible: root.view.bar.dot
+          anchors.top: parent.top
+          anchors.right: parent.right
+          width: Math.max(3, Math.round(button.fontSize * 0.28))
+          height: width
+          radius: width / 2
+          color: button.activeColor
         }
       }
     }
@@ -356,6 +454,70 @@ Panel {
               font.pixelSize: root.noteSize
               wrapMode: Text.WordWrap
             }
+          }
+        }
+
+        // A verified newer release: its line and versions above the primary
+        // Update button, or beside a regular Update button of its own when
+        // something else holds the primary slot.
+        Item {
+          visible: root.view.update !== null
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          implicitHeight: Math.max(updateColumn.implicitHeight, updateButton.visible ? updateButton.implicitHeight : 0)
+
+          Rectangle {
+            id: updateDot
+            anchors.left: parent.left
+            anchors.verticalCenter: updateColumn.verticalCenter
+            width: Style.space(6)
+            height: width
+            radius: width / 2
+            color: button.activeColor
+          }
+
+          Column {
+            id: updateColumn
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: updateDot.right
+            anchors.right: updateButton.visible ? updateButton.left : parent.right
+            anchors.leftMargin: Style.space(7)
+            anchors.rightMargin: updateButton.visible ? Style.space(8) : 0
+            spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.update ? root.say(root.view.update.line) : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: root.bodySize
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.update ? root.say(root.view.update.versions) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: root.noteSize
+              elide: Text.ElideRight
+            }
+          }
+
+          // The Update Job isn't wired yet, so the button has nothing behind it.
+          Button {
+            id: updateButton
+            visible: root.view.update !== null && !root.view.update.primary
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            bordered: true
+            enabled: root.view.update !== null && root.view.update.button.enabled
+            opacity: enabled ? 1 : 0.35
+            text: root.view.update ? root.say(root.view.update.button.label) : ""
+            foreground: root.foreground
+            fontFamily: root.fontFamily
           }
         }
 
