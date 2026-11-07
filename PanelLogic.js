@@ -51,7 +51,8 @@ var COMMANDS = {
   probe: ["status", "--json", "--probe"],
   connect: ["connect"],
   disconnect: ["disconnect"],
-  reconnect: ["reconnect"]
+  reconnect: ["reconnect"],
+  check: ["check", "--json"]
 }
 
 // Qt.resolvedUrl(".") from the plugin folder, as a filesystem path.
@@ -73,10 +74,14 @@ function shellQuote(word) {
   return "'" + String(word).replace(/'/g, "'\\''") + "'"
 }
 
+// The Jobs the Panel launches. Restart service is a Job the backend knows,
+// but its fix button is not wired up yet.
+var LAUNCHED_JOBS = ["install", "start", "register"]
+
 // The launcher argv for the primary button's Job, or null when the button
-// is missing, disabled or not a Job.
+// is missing, disabled or not a Job the Panel launches.
 function jobLaunch(dir, primary, jobId) {
-  if (!dir || !primary || primary.enabled !== true || JOB_ACTIONS.indexOf(primary.action) < 0) return null
+  if (!dir || !primary || primary.enabled !== true || LAUNCHED_JOBS.indexOf(primary.action) < 0) return null
   if (typeof jobId !== "string" || !JOB_ID.test(jobId)) return null
   var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", primary.action, "--job-id", jobId]
   return [LAUNCHER, argv.map(shellQuote).join(" ")]
@@ -86,7 +91,7 @@ function jobLaunch(dir, primary, jobId) {
 // terminal, "toggle" runs Reconnect in the background, null does nothing.
 function primaryDispatch(primary) {
   if (!primary || primary.enabled !== true) return null
-  if (JOB_ACTIONS.indexOf(primary.action) >= 0) return "job"
+  if (LAUNCHED_JOBS.indexOf(primary.action) >= 0) return "job"
   return primary.action === "reconnect" ? "toggle" : null
 }
 
@@ -192,21 +197,75 @@ function isObject(value) {
 }
 
 var CONNECTIONS = [null, "connected", "connecting", "disconnected"]
-var PROBLEM_CODES = ["not_installed", "service_stopped", "daemon_unresponsive", "not_registered",
-                     "not_through_cloudflare", "dns_broken", "dns_bypassed", "dns_shared"]
-var FIXES = [null, "install", "start", "restart", "register", "reconnect"]
 var JOB_ACTIONS = ["install", "update", "restart", "start", "register"]
 // Background switch commands: the Panel waits on them, one at a time.
 var TOGGLE_ACTIONS = ["connect", "disconnect", "reconnect"]
 
-function isProblem(value) {
-  return isObject(value) && PROBLEM_CODES.indexOf(value.code) >= 0
-    && FIXES.indexOf(value.fix) >= 0 && typeof value.blocking === "boolean"
+// The contract's Problems in precedence order, each with its one fix and
+// blocking flag. The backend classifies; the Panel only checks the list.
+var PROBLEMS = [
+  { code: "not_installed", fix: "install", blocking: true },
+  { code: "service_stopped", fix: "start", blocking: true },
+  { code: "daemon_unresponsive", fix: "restart", blocking: true },
+  { code: "not_registered", fix: "register", blocking: true },
+  { code: "not_through_cloudflare", fix: "reconnect", blocking: false },
+  { code: "dns_broken", fix: null, blocking: false },
+  { code: "dns_bypassed", fix: "reconnect", blocking: false },
+  { code: "dns_shared", fix: null, blocking: false }
+]
+
+// Where a Problem stands in precedence order, or -1 when it is not exactly
+// one of the contract's.
+function problemRank(value) {
+  if (!isObject(value)) return -1
+  for (var i = 0; i < PROBLEMS.length; i++) {
+    var known = PROBLEMS[i]
+    if (value.code === known.code) return value.fix === known.fix && value.blocking === known.blocking ? i : -1
+  }
+  return -1
+}
+
+// Known Problems, each once and in precedence order. A blocking Problem
+// nulls every fact below it, so it is always alone.
+function isProblemList(value) {
+  if (!Array.isArray(value)) return false
+  var last = -1
+  for (var i = 0; i < value.length; i++) {
+    var rank = problemRank(value[i])
+    if (rank <= last) return false
+    if (value[i].blocking && value.length !== 1) return false
+    last = rank
+  }
+  return true
 }
 
 function isJob(value) {
   return value === null || (isObject(value) && JOB_ACTIONS.indexOf(value.action) >= 0
     && typeof value.started_at === "string" && !isNaN(Date.parse(value.started_at)))
+}
+
+// Versions in the backend's own shape, short enough for one line. Anything
+// else never reaches a sink.
+var VERSION = /^[0-9]+(?:\.[0-9]+)+(?:-[0-9]+)?$/
+var CHECK_ERRORS = [null, "network", "verification"]
+
+function isVersion(value) {
+  return typeof value === "string" && value.length <= 40 && VERSION.test(value)
+}
+
+function isTime(value) {
+  return typeof value === "string" && !isNaN(Date.parse(value))
+}
+
+// The backend's update verdict: a newer release is only ever claimed with
+// both versions known.
+function isUpdate(value, installed) {
+  if (!isObject(value) || typeof value.due !== "boolean") return false
+  if (value.latest !== null && !isVersion(value.latest)) return false
+  if (value.verified_at !== null && !isTime(value.verified_at)) return false
+  if (CHECK_ERRORS.indexOf(value.last_error) < 0) return false
+  if (value.available === true) return value.latest !== null && installed !== null
+  return value.available === false || value.available === null
 }
 
 var TRACES = ["through", "outside", "failed"]
@@ -241,7 +300,9 @@ function parseStatus(text) {
   }
   if (!isObject(doc) || doc.schema !== 1 || !isObject(doc.client)) return null
   if (CONNECTIONS.indexOf(doc.client.connection) < 0) return null
-  if (!Array.isArray(doc.problems) || !doc.problems.every(isProblem)) return null
+  if (doc.client.version !== null && !isVersion(doc.client.version)) return null
+  if (!isUpdate(doc.update, doc.client.version)) return null
+  if (!isProblemList(doc.problems)) return null
   if (!isJob(doc.job)) return null
   if (!isProbe(doc.probe)) return null
   return doc
@@ -252,13 +313,19 @@ var META = { disconnected: "meta.off", connecting: "meta.connecting", connected:
 // A running Job is calm, never crossed out, even over the Problem it fixes.
 // Otherwise any Problem crosses the cloud out. Connected earns the outlined
 // cloud until a probe confirms Through Cloudflare, which earns the full one;
-// everything else is the full cloud, dimmed.
-function barIcon(connection, job, problem, through) {
-  if (job) return { glyph: CLOUD, opacity: DIMMED }
-  if (problem) return { glyph: CLOUD_OFF, opacity: 1 }
-  if (through) return { glyph: CLOUD, opacity: 1 }
-  if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1 }
-  return { glyph: CLOUD, opacity: DIMMED }
+// everything else is the full cloud, dimmed. Whatever the cloud, a dot says
+// a verified newer release is waiting.
+function barIcon(connection, job, problem, through, dot) {
+  if (job) return { glyph: CLOUD, opacity: DIMMED, dot: dot }
+  if (problem) return { glyph: CLOUD_OFF, opacity: 1, dot: dot }
+  if (through) return { glyph: CLOUD, opacity: 1, dot: dot }
+  if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1, dot: dot }
+  return { glyph: CLOUD, opacity: DIMMED, dot: dot }
+}
+
+// The backend compares versions; the Panel only reads its verdict.
+function updateAvailable(doc) {
+  return !!doc && doc.update.available === true
 }
 
 function heroMeta(connection, job, problem, through, checking) {
@@ -301,12 +368,66 @@ function ipRow(probe, through, checking, visible) {
   return row
 }
 
-// The one thing to do now, as a full-width button. Reconnect is a switch
+// The one thing to do now, as a full-width button. A Job the Panel can't
+// launch yet still shows as the fix, disabled. Reconnect is a switch
 // command, so it waits for any other to end.
 function primaryButton(problem, broken, toggling) {
   if (!problem || !problem.fix) return null
-  var enabled = !broken && !(problem.fix === "reconnect" && toggling)
-  return { action: problem.fix, label: message("fix." + problem.fix), enabled: enabled }
+  var unwired = JOB_ACTIONS.indexOf(problem.fix) >= 0 && LAUNCHED_JOBS.indexOf(problem.fix) < 0
+  var waiting = problem.fix === "reconnect" && toggling
+  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired && !waiting }
+}
+
+// The update row: the line and versions, and its own Update button. It
+// holds the primary slot unless a fix or a needed restart outranks it. The
+// button has no action yet, so it launches nothing until the Update Job is
+// wired.
+function updateRow(doc, fix, broken) {
+  if (!updateAvailable(doc)) return null
+  return {
+    line: message("update.line"),
+    versions: message("update.versions", { from: doc.client.version, to: doc.update.latest }),
+    primary: !fix && doc.client.restart_needed !== true,
+    button: { label: message("update.button"), enabled: !broken }
+  }
+}
+
+var CHECK_PERIOD = 12 * 3600 * 1000
+// `check --json` runs beside status, never in its way, and gets this long.
+var CHECK_DEADLINE = 30000
+
+// `check --json` prints the attempt it recorded: exit 0 with no error when
+// it verified a release, 1 with the error when the check failed. Anything
+// else (cut off, a crash, never started) recorded no attempt at all. The
+// output is untrusted and only ever read for this.
+function checkAbandoned(exitCode, text) {
+  if (exitCode !== 0 && exitCode !== 1) return true
+  var attempt
+  try {
+    attempt = JSON.parse(String(text))
+  } catch (e) {
+    return true
+  }
+  if (!isObject(attempt) || !isTime(attempt.attempted_at)) return true
+  if (CHECK_ERRORS.indexOf(attempt.last_error) < 0) return true
+  return (attempt.last_error === null) !== (exitCode === 0)
+}
+
+// A check the Panel had to abandon (cut off at its deadline, or dead before
+// it could record its attempt) holds the next one off for the same 12 h a
+// recorded attempt would.
+function recentlyAbandoned(at, now) {
+  return typeof at === "number" && isFinite(at) && now.getTime() - at < CHECK_PERIOD
+}
+
+// When the backend says a check is due, auto-check is on (anything but an
+// explicit false, as it defaults to on) and no check is in flight,
+// `check --json` runs in the background. A stale document says nothing is
+// due, and a live Job is left alone.
+function backgroundCheck(doc, flags, now) {
+  return !!doc && !doc.job && flags.backendError !== true && doc.update.due === true
+    && flags.autoCheck !== false && flags.checkInFlight !== true
+    && !recentlyAbandoned(flags.checkAbandonedAt, now)
 }
 
 function view(doc, flags, now) {
@@ -327,14 +448,18 @@ function view(doc, flags, now) {
   // and one follows every switch command.
   var checking = (flags.probeInFlight === true || !!inFlight) && probe === null
   var meta = heroMeta(connection, job, problem, through, checking)
+  var fix = primaryButton(problem, broken, !!inFlight)
+  var update = job ? null : updateRow(doc, fix, broken)
   return {
     greyed: broken,
     banner: broken ? message("backendError") : null,
-    bar: barIcon(connection, job, problem, through),
+    bar: barIcon(connection, job, problem, through, updateAvailable(doc)),
     hero: { title: message("title"), meta: message(meta) },
     note: job ? jobNote(job, now) : problem ? problemNote(problem) : meta === "meta.unconfirmed" ? unconfirmedNote() : null,
     ip: ipRow(probe, through, checking, !job && !(problem && problem.blocking)),
-    primary: primaryButton(problem, broken, !!inFlight),
+    primary: fix || (update && update.primary ? update.button : null),
+    update: update,
+    check: { start: backgroundCheck(doc, flags, now) },
     toggle: {
       checked: inFlight ? inFlight !== "disconnect" : on,
       enabled: known && !job && !inFlight && !broken,
