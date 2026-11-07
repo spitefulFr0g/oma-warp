@@ -72,9 +72,9 @@ function shellQuote(word) {
   return "'" + String(word).replace(/'/g, "'\\''") + "'"
 }
 
-// The Jobs the Panel launches. Restart service is a Job the backend knows,
-// but its fix button is not wired up yet.
-var LAUNCHED_JOBS = ["install", "start", "register"]
+// The Jobs the Panel launches. Update is a Job the backend knows, but its
+// button is not wired up yet.
+var LAUNCHED_JOBS = ["install", "start", "restart", "register"]
 
 // The launcher argv for the primary button's Job, or null when the button
 // is missing, disabled or not a Job the Panel launches.
@@ -221,8 +221,8 @@ var META = { disconnected: "meta.off", connecting: "meta.connecting", connected:
 // A running Job is calm, never crossed out, even over the Problem it fixes.
 // Otherwise any Problem crosses the cloud out. Connected earns the outlined
 // cloud until a probe confirms Through Cloudflare; everything else is the
-// full cloud, dimmed. Whatever the cloud, a dot says a verified newer
-// release is waiting.
+// full cloud, dimmed. Whatever the cloud, a dot says maintenance is
+// waiting.
 function barIcon(connection, job, problem, dot) {
   if (job) return { glyph: CLOUD, opacity: DIMMED, dot: dot }
   if (problem) return { glyph: CLOUD_OFF, opacity: 1, dot: dot }
@@ -233,6 +233,18 @@ function barIcon(connection, job, problem, dot) {
 // The backend compares versions; the Panel only reads its verdict.
 function updateAvailable(doc) {
   return !!doc && doc.update.available === true
+}
+
+// A new client is installed but the old service still runs. Not a Problem;
+// only an explicit true counts, as null means the backend can't know.
+function restartNeeded(doc) {
+  return !!doc && doc.client.restart_needed === true
+}
+
+// Maintenance is waiting: a verified newer release, or a restart to finish
+// the one already installed.
+function maintenanceDot(doc) {
+  return updateAvailable(doc) || restartNeeded(doc)
 }
 
 function heroMeta(connection, job, problem) {
@@ -259,6 +271,18 @@ function primaryButton(problem, broken) {
   return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired }
 }
 
+// The restart row: finishing an installed update, with a full-width Restart
+// that runs the restart-and-restore Job. It holds the primary slot whenever
+// no Problem's fix does, and is not offered beside one.
+function restartRow(doc, fix, broken) {
+  if (!restartNeeded(doc) || fix) return null
+  return {
+    line: message("restart.line"),
+    detail: message("restart.detail", { v: doc.client.version }),
+    button: { action: "restart", label: message("restart.button"), enabled: !broken }
+  }
+}
+
 // The update row: the line and versions, and its own Update button. It
 // holds the primary slot unless a fix or a needed restart outranks it. The
 // button has no action yet, so it launches nothing until the Update Job is
@@ -268,7 +292,7 @@ function updateRow(doc, fix, broken) {
   return {
     line: message("update.line"),
     versions: message("update.versions", { from: doc.client.version, to: doc.update.latest }),
-    primary: !fix && doc.client.restart_needed !== true,
+    primary: !fix && !restartNeeded(doc),
     button: { label: message("update.button"), enabled: !broken }
   }
 }
@@ -322,15 +346,17 @@ function view(doc, flags, now) {
   var inFlight = flags.toggleInFlight === "connect" || flags.toggleInFlight === "disconnect" ? flags.toggleInFlight : null
   var broken = flags.backendError === true
   var fix = primaryButton(problem, broken)
+  var restart = job ? null : restartRow(doc, fix, broken)
   var update = job ? null : updateRow(doc, fix, broken)
   return {
     greyed: broken,
     banner: broken ? message("backendError") : null,
-    bar: barIcon(connection, job, problem, updateAvailable(doc)),
+    bar: barIcon(connection, job, problem, maintenanceDot(doc)),
     hero: { title: message("title"), meta: message(heroMeta(connection, job, problem)) },
     note: job ? jobNote(job, now) : problem ? problemNote(problem) : null,
     ip: { visible: !job && !(problem && problem.blocking) },
-    primary: fix || (update && update.primary ? update.button : null),
+    primary: fix || (restart ? restart.button : update && update.primary ? update.button : null),
+    restart: restart,
     update: update,
     check: { start: backgroundCheck(doc, flags, now) },
     toggle: {

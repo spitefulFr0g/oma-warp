@@ -244,6 +244,40 @@ TestCase {
     compare(viewOf(row.fixture).bar.dot, row.dot)
   }
 
+  // A new client installed under the old service is maintenance too, never
+  // a Problem: the cloud keeps its connection's look and gains the dot.
+  function test_restart_needed_puts_a_dot_on_the_cloud() {
+    var v = viewOf("restart")
+    compare(v.bar.dot, true)
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 0.42)
+    compare(say(v.hero.meta), "Off")
+    compare(v.note, null)
+    compare(v.toggle.enabled, true)
+    compare(v.ip.visible, true)
+  }
+
+  // Either reason alone is enough, and the dot survives a Problem and a Job.
+  function test_the_dot_shows_for_a_restart_or_an_update_data() {
+    return [
+      { tag: "restart only", restart: true, available: false, dot: true },
+      { tag: "update only", restart: false, available: true, dot: true },
+      { tag: "both", restart: true, available: true, dot: true },
+      { tag: "neither", restart: false, available: false, dot: false },
+      { tag: "restart unknown", restart: null, available: false, dot: false },
+    ]
+  }
+
+  function test_the_dot_shows_for_a_restart_or_an_update(row) {
+    ["on", "dns_broken", "job"].forEach(function(name) {
+      var text = variant(name, function(d) {
+        d.client.restart_needed = row.restart
+        d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: row.available, last_error: null, due: false }
+      })
+      compare(Logic.view(Logic.parseStatus(text), {}, now).bar.dot, row.dot, name)
+    })
+  }
+
   // With nothing else to do, Update holds the full-width slot and its line
   // and versions sit above it.
   function test_update_holds_the_primary_slot_when_nothing_else_does() {
@@ -274,14 +308,146 @@ TestCase {
     compare(v.bar.glyph, crossedCloud)
   }
 
+  // With no fix to offer, finishing the installed update is the one thing
+  // to do: its line and detail sit above a full-width Restart that runs the
+  // restart-and-restore Job in the terminal.
+  function test_restart_needed_holds_the_primary_slot() {
+    var v = viewOf("restart")
+    compare(say(v.restart.line), "Restart to finish the update")
+    compare(say(v.restart.detail), "2026.8.2115.0 installed, old service still running")
+    compare(say(v.primary.label), "Restart")
+    compare(v.primary.action, "restart")
+    compare(v.primary.enabled, true)
+    compare(v.update, null)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'restart' '--job-id' 'k9-x1'"])
+  }
+
+  function test_no_restart_row_without_a_needed_restart_data() {
+    return [
+      { tag: "on", fixture: "on" },
+      { tag: "update", fixture: "update" },
+      { tag: "unknown", fixture: "restart", restart: null },
+      { tag: "not installed", fixture: "not_installed" },
+    ]
+  }
+
+  function test_no_restart_row_without_a_needed_restart(row) {
+    var text = variant(row.fixture, function(d) { if (row.hasOwnProperty("restart")) d.client.restart_needed = row.restart })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.restart, null)
+    verify(v.primary === null || v.primary.label.key !== "restart.button")
+  }
+
   // Finishing an installed update comes before offering the next one: the
   // primary slot stays with the restart, and Update takes the small row.
   function test_a_needed_restart_keeps_update_out_of_the_primary_slot() {
     var text = variant("update", function(d) { d.client.restart_needed = true })
     var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(say(v.primary.label), "Restart")
+    compare(v.primary.action, "restart")
+    compare(say(v.restart.line), "Restart to finish the update")
+    compare(v.update.primary, false)
+    compare(say(v.update.line), "Update available")
+    compare(say(v.update.versions), "2026.8.2115.0 → 2026.9.1180.0")
+    compare(say(v.update.button.label), "Update")
+    compare(v.update.button.enabled, true)
+    compare(v.bar.dot, true)
+  }
+
+  // A Problem's fix outranks the restart, which is then not offered at all;
+  // an available update still steps down to its small row.
+  function test_a_fix_outranks_a_needed_restart_data() {
+    return [
+      { tag: "Restart service", fixture: "daemon_unresponsive", fix: "Restart service", action: "restart" },
+      { tag: "Start service", fixture: "service_stopped", fix: "Start service", action: "start" },
+      { tag: "Register", fixture: "not_registered", fix: "Register", action: "register" },
+    ]
+  }
+
+  function test_a_fix_outranks_a_needed_restart(row) {
+    var text = variant(row.fixture, function(d) {
+      d.client.restart_needed = true
+      d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(say(v.primary.label), row.fix)
+    compare(v.primary.action, row.action)
+    compare(v.restart, null)
     compare(v.update.primary, false)
     compare(say(v.update.button.label), "Update")
-    verify(v.primary === null || v.primary.label.key !== "update.button")
+    compare(v.note.kind, "problem")
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.dot, true)
+  }
+
+  // A Problem with no fix leaves the slot to the restart, under its note.
+  function test_a_problem_without_a_fix_leaves_the_slot_to_the_restart() {
+    var text = variant("dns_broken", function(d) { d.client.restart_needed = true })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.note.kind, "problem")
+    compare(v.note.line.key, "problem.dns_broken")
+    compare(say(v.restart.line), "Restart to finish the update")
+    compare(say(v.primary.label), "Restart")
+    compare(v.primary.action, "restart")
+    compare(v.primary.enabled, true)
+  }
+
+  // A running Job offers nothing else, the restart included; once the
+  // Restart Job is live the Panel shows it as the note.
+  function test_no_restart_is_offered_while_a_job_runs_data() {
+    return [
+      { tag: "restart Job", action: "restart", line: "Restarting the WARP service…" },
+      { tag: "other Job", action: "start", line: "Starting the WARP service…" },
+    ]
+  }
+
+  function test_no_restart_is_offered_while_a_job_runs(row) {
+    var text = variant("job", function(d) {
+      d.client.restart_needed = true
+      d.job.action = row.action
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.restart, null)
+    compare(v.primary, null)
+    compare(v.note.kind, "job")
+    compare(say(v.note.line), row.line)
+    compare(v.bar.dot, true)
+    compare(v.bar.glyph, fullCloud)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"), null)
+  }
+
+  // A broken backend greys the restart, which then launches nothing.
+  function test_a_broken_backend_disables_the_restart() {
+    var v = viewOf("restart", { backendError: true })
+    compare(v.greyed, true)
+    compare(say(v.restart.line), "Restart to finish the update")
+    compare(v.primary.action, "restart")
+    compare(v.primary.enabled, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"), null)
+    var fix = viewOf("daemon_unresponsive", { backendError: true }).primary
+    compare(fix.enabled, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", fix, "k9-x1"), null)
+  }
+
+  // The switch and the background check carry on beside a needed restart;
+  // neither a switch nor a check in flight touches the Restart button.
+  function test_the_restart_leaves_the_switch_and_check_alone_data() {
+    return [
+      { tag: "idle", flags: {}, toggleEnabled: true, start: true },
+      { tag: "connecting", flags: { toggleInFlight: "connect" }, toggleEnabled: false, start: true },
+      { tag: "check in flight", flags: { checkInFlight: true }, toggleEnabled: true, start: false },
+      { tag: "auto-check off", flags: { autoCheck: false }, toggleEnabled: true, start: false },
+    ]
+  }
+
+  function test_the_restart_leaves_the_switch_and_check_alone(row) {
+    var v = viewOf("restart", row.flags)
+    compare(v.toggle.enabled, row.toggleEnabled)
+    compare(v.check.start, row.start)
+    compare(v.primary.action, "restart")
+    compare(v.primary.enabled, true)
   }
 
   // While a Job runs Update is not offered from either position; the dot
@@ -575,6 +741,16 @@ TestCase {
              "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'register' '--job-id' 'k9-x1'"])
   }
 
+  // A hung daemon is one click from fixed: Restart service runs the
+  // restart-and-restore Job in the terminal, where sudo can prompt.
+  function test_restart_service_launches_the_restart_job_in_a_terminal() {
+    var primary = viewOf("daemon_unresponsive").primary
+    compare(primary.enabled, true)
+    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'restart' '--job-id' 'k9-x1'"])
+  }
+
   // Install builds, installs and registers in the terminal, so pacman's
   // confirmation and Cloudflare's terms prompt both work there.
   function test_install_button_launches_the_install_job_in_a_terminal() {
@@ -641,22 +817,6 @@ TestCase {
     compare(v.primary.action, "install")
     compare(v.check.start, true)
     compare(viewOf("not_installed", { autoCheck: false }).check.start, false)
-  }
-
-  // Restart service shows as the fix, but its Job is not wired to the Panel
-  // yet: the button is there, disabled, and launches nothing even if asked.
-  function test_fixes_without_a_wired_job_show_but_launch_nothing_data() {
-    return [
-      { tag: "Restart service", fixture: "daemon_unresponsive", action: "restart" },
-    ]
-  }
-
-  function test_fixes_without_a_wired_job_show_but_launch_nothing(row) {
-    var primary = viewOf(row.fixture).primary
-    compare(primary.action, row.action)
-    compare(primary.enabled, false)
-    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"), null)
-    compare(Logic.jobLaunch("/srv/oma-warp", { action: row.action, label: null, enabled: true }, "k9-x1"), null)
   }
 
   function test_nothing_launches_without_an_enabled_job_data() {
@@ -741,6 +901,7 @@ TestCase {
       d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
     })
     compare(Logic.jobLaunch("/srv/oma-warp", Logic.view(Logic.parseStatus(text), {}, now).update.button, "k9-x1"), null)
+    compare(Logic.jobLaunch("/srv/oma-warp", { action: "update", label: null, enabled: true }, "k9-x1"), null)
   }
 
   // Reconnect is a background command, not a terminal Job.
