@@ -797,6 +797,212 @@ TestCase {
 
   // parseStatus() answers null for anything the Panel must treat as a broken
   // backend; the Panel then raises the backend-error flag.
+  // DNS lookups time out: a non-blocking Problem with nothing to press, so
+  // the switch still works. The trace still went through Cloudflare, so the
+  // IP keeps its location while the cloud is crossed out.
+  function test_dns_broken_explains_itself_without_a_fix() {
+    var v = viewOf("dns_broken")
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.opacity, 1)
+    compare(v.bar.dot, false)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), "DNS lookups are failing")
+    compare(say(v.note.detail), "Lookups time out. Usually DNSOverTLS=yes set by hand in resolved.conf.")
+    compare(v.note.more, null)
+    compare(v.primary, null)
+    compare(v.restart, null)
+    compare(v.update, null)
+    compare(v.toggle.checked, true)
+    compare(v.toggle.enabled, true)
+    compare(v.toggle.action, "disconnect")
+    compare(v.ip.visible, true)
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(v.ip.muted, false)
+    compare(say(v.ip.suffix), "· XXX, XX")
+  }
+
+  // WARP lost its DNS settings: Reconnect restores them, run in the
+  // background like the switch, which stays usable beside it.
+  function test_dns_bypassed_offers_reconnect() {
+    var v = viewOf("dns_bypassed")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), "DNS is bypassing WARP")
+    compare(say(v.note.detail), "WARP lost its DNS settings, so lookups go to your usual resolver.")
+    compare(v.note.more, null)
+    compare(v.primary.action, "reconnect")
+    compare(say(v.primary.label), "Reconnect")
+    compare(v.primary.enabled, true)
+    compare(Logic.primaryDispatch(v.primary), "toggle")
+    compare(Logic.jobLaunch("/plugin", v.primary, "a-1"), null)
+    compare(v.toggle.enabled, true)
+    compare(v.toggle.action, "disconnect")
+  }
+
+  // Another network also claims all domains: nothing the Panel can press.
+  function test_dns_shared_names_the_other_network_without_a_fix() {
+    var v = viewOf("dns_shared")
+    compare(v.bar.glyph, crossedCloud)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), "Some DNS lookups skip WARP")
+    compare(say(v.note.detail), "Another network, such as Tailscale, also handles all domains.")
+    compare(v.note.more, null)
+    compare(v.primary, null)
+    compare(v.toggle.enabled, true)
+    compare(say(v.ip.suffix), "· XXX, XX")
+  }
+
+  // Routing and DNS together: the routing Problem is the main line with its
+  // explanation, the DNS one a "+" line under it. The button is the first
+  // Problem's fix, and the IP is the real one, outside WARP.
+  function test_routing_and_dns_show_a_main_line_and_a_plus_line() {
+    var v = viewOf("multi")
+    compare(v.bar.glyph, crossedCloud)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), "Traffic isn't going through Cloudflare")
+    compare(say(v.note.detail), "WARP says it's connected, but Cloudflare sees your traffic arriving from outside WARP.")
+    compare(say(v.note.more), "+ DNS is bypassing WARP")
+    compare(v.primary.action, "reconnect")
+    compare(say(v.primary.label), "Reconnect")
+    compare(v.primary.enabled, true)
+    compare(v.toggle.enabled, true)
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(v.ip.muted, true)
+    compare(say(v.ip.suffix), "· not WARP")
+  }
+
+  // Beside a DNS Problem the slot still goes fix, then Restart, then
+  // Update, and the main and "+" lines stay as they were.
+  function test_dns_problems_keep_the_primary_slot_order_data() {
+    return [
+      { tag: "bypassed, restart and update", line: "DNS is bypassing WARP", fixture: "dns_bypassed", restart: true, update: true,
+        primary: "Reconnect", action: "reconnect", restartRow: false, updateRow: "small" },
+      { tag: "bypassed, update", line: "DNS is bypassing WARP", fixture: "dns_bypassed", restart: false, update: true,
+        primary: "Reconnect", action: "reconnect", restartRow: false, updateRow: "small" },
+      { tag: "multi, restart and update", line: "Traffic isn't going through Cloudflare", fixture: "multi", restart: true, update: true,
+        primary: "Reconnect", action: "reconnect", restartRow: false, updateRow: "small", more: "+ DNS is bypassing WARP" },
+      { tag: "broken, restart and update", line: "DNS lookups are failing", fixture: "dns_broken", restart: true, update: true,
+        primary: "Restart", action: "restart", restartRow: true, updateRow: "small" },
+      { tag: "shared, restart", line: "Some DNS lookups skip WARP", fixture: "dns_shared", restart: true, update: false,
+        primary: "Restart", action: "restart", restartRow: true, updateRow: null },
+      { tag: "broken, update", line: "DNS lookups are failing", fixture: "dns_broken", restart: false, update: true,
+        primary: "Update", action: undefined, restartRow: false, updateRow: "primary" },
+      { tag: "shared, update", line: "Some DNS lookups skip WARP", fixture: "dns_shared", restart: false, update: true,
+        primary: "Update", action: undefined, restartRow: false, updateRow: "primary" },
+    ]
+  }
+
+  function test_dns_problems_keep_the_primary_slot_order(row) {
+    var text = variant(row.fixture, function(d) {
+      d.client.restart_needed = row.restart
+      if (row.update) d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(say(v.primary.label), row.primary)
+    compare(v.primary.action, row.action)
+    compare(v.primary.enabled, true)
+    compare(v.restart !== null, row.restartRow)
+    if (row.updateRow === null) compare(v.update, null)
+    else compare(v.update.primary, row.updateRow === "primary")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), row.line)
+    compare(say(v.note.more), row.more || null)
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.dot, true)
+  }
+
+  // Only a Problem note has a "+" line: a running Job hides both Problems,
+  // a blocking Problem is always alone, and the neutral note has none.
+  function test_only_two_problems_make_a_plus_line_data() {
+    return [
+      { tag: "Job over routing and DNS", fixture: "multi", job: true, kind: "job" },
+      { tag: "Job over a DNS Problem", fixture: "dns_bypassed", job: true, kind: "job" },
+      { tag: "not installed", fixture: "not_installed", kind: "problem" },
+      { tag: "service stopped", fixture: "service_stopped", kind: "problem" },
+      { tag: "daemon unresponsive", fixture: "daemon_unresponsive", kind: "problem" },
+      { tag: "not registered", fixture: "not_registered", kind: "problem" },
+      { tag: "outside alone", fixture: "outside", kind: "problem" },
+      { tag: "trace failed", fixture: "trace_failed", kind: "unconfirmed" },
+    ]
+  }
+
+  function test_only_two_problems_make_a_plus_line(row) {
+    var text = variant(row.fixture, function(d) {
+      if (row.job) d.job = { action: "restart", started_at: "2026-10-02T00:00:00Z" }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.note.kind, row.kind)
+    compare(v.note.more, null)
+    if (row.job) {
+      compare(v.primary, null)
+      compare(v.bar.glyph, fullCloud)
+      compare(v.bar.opacity, 0.42)
+      compare(v.ip.visible, false)
+      compare(v.toggle.enabled, false)
+    }
+  }
+
+  // What the Panel is doing meanwhile never changes which Problems show.
+  // A switch command holds Reconnect back, a broken backend greys it all,
+  // and a probe in flight leaves the result it already has on screen.
+  function test_dns_problems_beside_what_is_in_flight_data() {
+    return [
+      { tag: "multi, idle", fixture: "multi", flags: {},
+        primary: true, toggle: true, busy: false, checked: true, check: true, greyed: false },
+      { tag: "multi, reconnect in flight", fixture: "multi", flags: { toggleInFlight: "reconnect" },
+        primary: false, toggle: false, busy: true, checked: true, check: true, greyed: false },
+      { tag: "multi, disconnect in flight", fixture: "multi", flags: { toggleInFlight: "disconnect" },
+        primary: false, toggle: false, busy: true, checked: false, check: true, greyed: false },
+      { tag: "multi, probe in flight", fixture: "multi", flags: { probeInFlight: true },
+        primary: true, toggle: true, busy: false, checked: true, check: true, greyed: false },
+      { tag: "multi, check in flight", fixture: "multi", flags: { checkInFlight: true },
+        primary: true, toggle: true, busy: false, checked: true, check: false, greyed: false },
+      { tag: "multi, auto-check off", fixture: "multi", flags: { autoCheck: false },
+        primary: true, toggle: true, busy: false, checked: true, check: false, greyed: false },
+      { tag: "multi, backend error", fixture: "multi", flags: { backendError: true },
+        primary: false, toggle: false, busy: false, checked: true, check: false, greyed: true },
+      { tag: "bypassed, reconnect in flight", fixture: "dns_bypassed", flags: { toggleInFlight: "reconnect" },
+        primary: false, toggle: false, busy: true, checked: true, check: true, greyed: false },
+      { tag: "bypassed, backend error", fixture: "dns_bypassed", flags: { backendError: true },
+        primary: false, toggle: false, busy: false, checked: true, check: false, greyed: true },
+      { tag: "broken, connect in flight", fixture: "dns_broken", flags: { toggleInFlight: "connect" },
+        primary: null, toggle: false, busy: true, checked: true, check: true, greyed: false },
+      { tag: "broken, probe in flight", fixture: "dns_broken", flags: { probeInFlight: true },
+        primary: null, toggle: true, busy: false, checked: true, check: true, greyed: false },
+      { tag: "shared, auto-check off", fixture: "dns_shared", flags: { autoCheck: false },
+        primary: null, toggle: true, busy: false, checked: true, check: false, greyed: false },
+      { tag: "shared, backend error", fixture: "dns_shared", flags: { backendError: true },
+        primary: null, toggle: false, busy: false, checked: true, check: false, greyed: true },
+    ]
+  }
+
+  function test_dns_problems_beside_what_is_in_flight(row) {
+    var doc = Logic.parseStatus(fixture(row.fixture))
+    var alone = Logic.view(doc, {}, now)
+    var v = Logic.view(doc, row.flags, now)
+    if (row.primary === null) compare(v.primary, null)
+    else {
+      compare(v.primary.action, "reconnect")
+      compare(v.primary.enabled, row.primary)
+      compare(Logic.primaryDispatch(v.primary), row.primary ? "toggle" : null)
+    }
+    compare(v.toggle.enabled, row.toggle)
+    compare(v.toggle.busy, row.busy)
+    compare(v.toggle.checked, row.checked)
+    compare(v.check.start, row.check)
+    compare(v.greyed, row.greyed)
+    compare(say(v.banner), row.greyed ? "Couldn't read WARP status" : null)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.bar.glyph, crossedCloud)
+    compare(say(v.note.line), say(alone.note.line))
+    compare(say(v.note.detail), say(alone.note.detail))
+    compare(say(v.note.more), row.fixture === "multi" ? "+ DNS is bypassing WARP" : null)
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(say(v.ip.suffix), row.fixture === "multi" ? "· not WARP" : "· XXX, XX")
+  }
+
   function test_untrusted_output_is_refused_data() {
     var off = JSON.parse(readText("../fixtures/off.json"))
     function variant(change) {
@@ -846,6 +1052,14 @@ TestCase {
         d.problems = [{ code: "dns_bypassed", fix: "reconnect", blocking: false }, { code: "not_through_cloudflare", fix: "reconnect", blocking: false }] }) },
       { tag: "the same Problem twice", text: variant(function(d) {
         d.problems = [{ code: "dns_shared", fix: null, blocking: false }, { code: "dns_shared", fix: null, blocking: false }] }) },
+      // The probe has one DNS verdict, so at most one DNS code.
+      { tag: "broken and bypassed DNS", text: variant(function(d) {
+        d.problems = [{ code: "dns_broken", fix: null, blocking: false }, { code: "dns_bypassed", fix: "reconnect", blocking: false }] }) },
+      { tag: "bypassed and shared DNS", text: variant(function(d) {
+        d.problems = [{ code: "dns_bypassed", fix: "reconnect", blocking: false }, { code: "dns_shared", fix: null, blocking: false }] }) },
+      { tag: "routing with two DNS codes", text: variant(function(d) {
+        d.problems = [{ code: "not_through_cloudflare", fix: "reconnect", blocking: false },
+                      { code: "dns_broken", fix: null, blocking: false }, { code: "dns_shared", fix: null, blocking: false }] }) },
       { tag: "no job key", text: variant(function(d) { delete d.job }) },
       { tag: "job not an object", text: variant(function(d) { d.job = "start" }) },
       { tag: "unknown job action", text: variant(function(d) { d.job = { action: "uninstall", started_at: "2026-10-02T00:00:00Z" } }) },

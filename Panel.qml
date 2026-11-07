@@ -464,6 +464,19 @@ Panel {
             font.pixelSize: root.noteSize
             wrapMode: Text.WordWrap
           }
+
+          // A second Problem: its line after a "+", under the explanation.
+          Text {
+            visible: root.view.note !== null && root.view.note.more !== null
+            width: parent.width
+            topPadding: Style.space(2)
+            textFormat: Text.PlainText
+            text: root.view.note ? root.say(root.view.note.more) : ""
+            color: Commons.Color.urgent
+            font.family: root.fontFamily
+            font.pixelSize: root.noteSize
+            wrapMode: Text.WordWrap
+          }
         }
 
         // The live Job: what it does, and that it runs in a terminal.
