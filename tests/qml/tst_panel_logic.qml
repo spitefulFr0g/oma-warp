@@ -61,6 +61,180 @@ TestCase {
     compare(v.ip.visible, true)
   }
 
+  // Only a trace on the current connection earns the full cloud, and only
+  // then does the IP carry its Cloudflare location.
+  function test_on_is_through_cloudflare() {
+    var v = viewOf("on")
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 1)
+    compare(say(v.hero.meta), "Through Cloudflare")
+    compare(v.toggle.checked, true)
+    compare(v.toggle.enabled, true)
+    compare(v.toggle.action, "disconnect")
+    compare(v.note, null)
+    compare(v.primary, null)
+    compare(v.ip.visible, true)
+    compare(say(v.ip.label), "IP")
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(v.ip.muted, false)
+    compare(say(v.ip.suffix), "· XXX, XX")
+  }
+
+  // A waiting update dots the full cloud too.
+  function test_through_cloudflare_with_an_update_waiting() {
+    var text = variant("on", function(d) {
+      d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 1)
+    compare(v.bar.dot, true)
+    compare(say(v.hero.meta), "Through Cloudflare")
+    compare(say(v.ip.suffix), "· XXX, XX")
+  }
+
+  // Connected, but Cloudflare sees the traffic arrive from outside WARP: a
+  // non-blocking Problem, so the switch still works beside its Reconnect.
+  function test_outside_offers_reconnect() {
+    var v = viewOf("outside")
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.opacity, 1)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.toggle.checked, true)
+    compare(v.toggle.enabled, true)
+    compare(v.toggle.action, "disconnect")
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), "Traffic isn't going through Cloudflare")
+    compare(say(v.note.detail), "WARP says it's connected, but Cloudflare sees your traffic arriving from outside WARP.")
+    compare(v.primary.action, "reconnect")
+    compare(say(v.primary.label), "Reconnect")
+    compare(v.primary.enabled, true)
+    compare(v.ip.visible, true)
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(v.ip.muted, true)
+    compare(say(v.ip.suffix), "· not WARP")
+  }
+
+  // A failed trace is not a Problem: a neutral note, never the full cloud.
+  function test_trace_failed_is_unconfirmed() {
+    var v = viewOf("trace_failed")
+    compare(v.bar.glyph, outlinedCloud)
+    compare(v.bar.opacity, 1)
+    compare(say(v.hero.meta), "Connected · not confirmed")
+    compare(v.toggle.checked, true)
+    compare(v.toggle.enabled, true)
+    compare(v.note.kind, "unconfirmed")
+    compare(say(v.note.line), "Couldn't confirm traffic goes through Cloudflare")
+    compare(v.note.detail, null)
+    compare(v.primary, null)
+    compare(v.ip.visible, true)
+    compare(say(v.ip.value), "—")
+    compare(v.ip.muted, true)
+    compare(v.ip.suffix, null)
+  }
+
+  // A probe in flight only speaks where the document has no probe for the
+  // current connection; a result it already has stays on screen meanwhile.
+  function test_probe_in_flight_data() {
+    return [
+      { tag: "connected, checking", fixture: "unconfirmed", probing: true, glyph: outlinedCloud, opacity: 1,
+        meta: "Connected · checking", note: null, ip: "Checking…", muted: false, suffix: null },
+      { tag: "connected, nothing running", fixture: "unconfirmed", probing: false, glyph: outlinedCloud, opacity: 1,
+        meta: "Connected · not confirmed", note: "Couldn't confirm traffic goes through Cloudflare", ip: "—", muted: true, suffix: null },
+      { tag: "dropped, checking", fixture: "dropped", probing: true, glyph: fullCloud, opacity: 0.42,
+        meta: "Off", note: null, ip: "Checking…", muted: false, suffix: null },
+      { tag: "dropped, nothing running", fixture: "dropped", probing: false, glyph: fullCloud, opacity: 0.42,
+        meta: "Off", note: null, ip: "—", muted: true, suffix: null },
+      { tag: "through, checking again", fixture: "on", probing: true, glyph: fullCloud, opacity: 1,
+        meta: "Through Cloudflare", note: null, ip: "203.0.113.7", muted: false, suffix: "· XXX, XX" },
+      { tag: "trace failed, checking again", fixture: "trace_failed", probing: true, glyph: outlinedCloud, opacity: 1,
+        meta: "Connected · not confirmed", note: "Couldn't confirm traffic goes through Cloudflare", ip: "—", muted: true, suffix: null },
+      { tag: "outside, checking again", fixture: "outside", probing: true, glyph: crossedCloud, opacity: 1,
+        meta: "Needs attention", note: "Traffic isn't going through Cloudflare", ip: "203.0.113.7", muted: true, suffix: "· not WARP" },
+    ]
+  }
+
+  function test_probe_in_flight(row) {
+    var v = viewOf(row.fixture, { probeInFlight: row.probing })
+    compare(v.bar.glyph, row.glyph)
+    compare(v.bar.opacity, row.opacity)
+    compare(say(v.hero.meta), row.meta)
+    compare(v.note ? say(v.note.line) : null, row.note)
+    compare(v.ip.visible, true)
+    compare(say(v.ip.value), row.ip)
+    compare(v.ip.muted, row.muted)
+    compare(say(v.ip.suffix), row.suffix)
+    compare(v.toggle.enabled, true)
+  }
+
+  // A probe follows every switch command, so while one runs without a
+  // probe for the connection, the Panel is checking rather than unconfirmed.
+  function test_a_switch_command_in_flight_is_checking_data() {
+    return [
+      { tag: "reconnecting", fixture: "unconfirmed", inFlight: "reconnect", meta: "Connected · checking", ip: "Checking…", muted: false },
+      { tag: "switching off", fixture: "unconfirmed", inFlight: "disconnect", meta: "Connected · checking", ip: "Checking…", muted: false },
+      { tag: "switching on", fixture: "off", inFlight: "connect", meta: "Off", ip: "Checking…", muted: false },
+      { tag: "reconnecting, still through", fixture: "on", inFlight: "reconnect", meta: "Through Cloudflare", ip: "203.0.113.7", muted: false },
+    ]
+  }
+
+  function test_a_switch_command_in_flight_is_checking(row) {
+    var v = viewOf(row.fixture, { toggleInFlight: row.inFlight })
+    compare(say(v.hero.meta), row.meta)
+    compare(v.note, null)
+    compare(say(v.ip.value), row.ip)
+    compare(v.ip.muted, row.muted)
+    compare(v.toggle.busy, true)
+  }
+
+  // Location is only ever shown Through Cloudflare; any other known IP is
+  // the real address and says so.
+  function test_ip_row_follows_the_trace_data() {
+    function probe(trace, ip) {
+      return { checked_at: "2026-10-02T00:00:00Z", trace: trace, ip: ip, colo: ip ? "XXX" : null, country: ip ? "XX" : null, dns: null }
+    }
+    return [
+      { tag: "off, outside", fixture: "off", change: function(d) { d.probe = probe("outside", "198.51.100.4") },
+        ip: "198.51.100.4", muted: true, suffix: "· not WARP" },
+      { tag: "off, trace failed", fixture: "off", change: function(d) { d.probe = probe("failed", null) },
+        ip: "—", muted: true, suffix: null },
+      { tag: "connecting, through", fixture: "connecting", change: function(d) { d.probe = probe("through", "203.0.113.7") },
+        ip: "203.0.113.7", muted: true, suffix: "· not WARP" },
+      { tag: "through, IPv6", fixture: "on", change: function(d) { d.probe.ip = "2001:db8::7" },
+        ip: "2001:db8::7", muted: false, suffix: "· XXX, XX" },
+      { tag: "through, no location", fixture: "on", change: function(d) { d.probe.colo = null; d.probe.country = null },
+        ip: "203.0.113.7", muted: false, suffix: null },
+    ]
+  }
+
+  function test_ip_row_follows_the_trace(row) {
+    var v = Logic.view(Logic.parseStatus(variant(row.fixture, row.change)), {}, now)
+    compare(v.ip.visible, true)
+    compare(say(v.ip.value), row.ip)
+    compare(v.ip.muted, row.muted)
+    compare(say(v.ip.suffix), row.suffix)
+  }
+
+  // Reconnect is a switch command: while it or any other runs, neither the
+  // switch nor Reconnect takes a click, and the knob stays where it goes.
+  function test_reconnect_counts_as_a_toggle_in_flight_data() {
+    return [
+      { tag: "reconnecting", inFlight: "reconnect", checked: true },
+      { tag: "disconnecting", inFlight: "disconnect", checked: false },
+      { tag: "connecting", inFlight: "connect", checked: true },
+    ]
+  }
+
+  function test_reconnect_counts_as_a_toggle_in_flight(row) {
+    var v = viewOf("outside", { toggleInFlight: row.inFlight })
+    compare(v.toggle.enabled, false)
+    compare(v.toggle.busy, true)
+    compare(v.toggle.checked, row.checked)
+    compare(say(v.primary.label), "Reconnect")
+    compare(v.primary.enabled, false)
+    compare(say(v.note.line), "Traffic isn't going through Cloudflare")
+  }
+
   function test_connecting() {
     var v = viewOf("connecting")
     compare(v.bar.glyph, fullCloud)
@@ -196,6 +370,34 @@ TestCase {
     compare(v.toggle.enabled, false)
   }
 
+  // Neither a confirmed trace nor a probe in flight outranks the Job.
+  function test_job_dims_a_confirmed_cloud() {
+    var text = variant("job", function(d) {
+      d.client.connection = "connected"
+      d.problems = []
+      d.probe = JSON.parse(fixture("on")).probe
+    })
+    var v = Logic.view(Logic.parseStatus(text), { probeInFlight: true }, now)
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 0.42)
+    compare(say(v.hero.meta), "Working in a terminal")
+    compare(v.note.kind, "job")
+    compare(v.ip.visible, false)
+  }
+
+  // Any Problem crosses the cloud out, even over a confirmed trace, and the
+  // location still follows the trace.
+  function test_a_problem_outranks_a_confirmed_trace() {
+    var v = viewOf("dns_bypassed")
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.opacity, 1)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.toggle.enabled, true)
+    compare(say(v.ip.value), "203.0.113.7")
+    compare(v.ip.muted, false)
+    compare(say(v.ip.suffix), "· XXX, XX")
+  }
+
   function test_job_lines_cover_every_job_action_data() {
     return [
       { tag: "install", action: "install", line: "Installing WARP…" },
@@ -255,6 +457,28 @@ TestCase {
     compare(v.note, null)
     compare(v.toggle.enabled, true)
     compare(v.ip.visible, true)
+  }
+
+  // Through Cloudflare keeps the full cloud, phrase and location under a
+  // needed restart, which adds its dot and holds the primary slot; under
+  // not_through_cloudflare, Reconnect holds it and the restart row waits.
+  function test_restart_needed_beside_the_probe() {
+    var through = Logic.view(Logic.parseStatus(variant("on", function(d) { d.client.restart_needed = true })), {}, now)
+    compare(through.bar, { glyph: fullCloud, opacity: 1, dot: true })
+    compare(say(through.hero.meta), "Through Cloudflare")
+    compare(say(through.ip.suffix), "· XXX, XX")
+    compare(through.primary.action, "restart")
+    compare(through.primary.enabled, true)
+    compare(Logic.primaryDispatch(through.primary), "job")
+    compare(through.toggle.enabled, true)
+
+    var outside = Logic.view(Logic.parseStatus(variant("outside", function(d) { d.client.restart_needed = true })), {}, now)
+    compare(outside.bar, { glyph: crossedCloud, opacity: 1, dot: true })
+    compare(outside.primary.action, "reconnect")
+    compare(Logic.primaryDispatch(outside.primary), "toggle")
+    compare(outside.restart, null)
+    compare(say(outside.ip.suffix), "· not WARP")
+    compare(outside.toggle.enabled, true)
   }
 
   // Either reason alone is enough, and the dot survives a Problem and a Job.
@@ -538,7 +762,7 @@ TestCase {
       { tag: "off", fixture: "off", glyph: fullCloud, opacity: 0.42, meta: "Off", checked: false },
       { tag: "connecting", fixture: "connecting", glyph: fullCloud, opacity: 0.42, meta: "Connecting", checked: true },
       { tag: "unconfirmed", fixture: "unconfirmed", glyph: outlinedCloud, opacity: 1, meta: "Connected · not confirmed", checked: true },
-      { tag: "unconfirmed, toggle in flight", fixture: "unconfirmed", inFlight: "disconnect", glyph: outlinedCloud, opacity: 1, meta: "Connected · not confirmed", checked: false },
+      { tag: "unconfirmed, toggle in flight", fixture: "unconfirmed", inFlight: "disconnect", glyph: outlinedCloud, opacity: 1, meta: "Connected · checking", checked: false },
       { tag: "service stopped", fixture: "service_stopped", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Start service" },
       { tag: "not installed", fixture: "not_installed", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Install" },
       { tag: "daemon unresponsive", fixture: "daemon_unresponsive", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Restart service" },
@@ -628,6 +852,14 @@ TestCase {
       { tag: "prototype key as job action", text: variant(function(d) { d.job = { action: "constructor", started_at: "2026-10-02T00:00:00Z" } }) },
       { tag: "job start not a time", text: variant(function(d) { d.job = { action: "start", started_at: "soon" } }) },
       { tag: "job start not a string", text: variant(function(d) { d.job = { action: "start", started_at: 0 } }) },
+      { tag: "no probe key", text: variant(function(d) { delete d.probe }) },
+      { tag: "probe not an object", text: variant(function(d) { d.probe = "through" }) },
+      { tag: "unknown trace", text: variant(function(d) { d.probe = { trace: "on", ip: null, colo: null, country: null, dns: null } }) },
+      { tag: "prototype key as trace", text: variant(function(d) { d.probe = { trace: "constructor", ip: null, colo: null, country: null, dns: null } }) },
+      { tag: "ip with markup", text: variant(function(d) { d.probe = { trace: "through", ip: "<b>203.0.113.7</b>", colo: "XXX", country: "XX", dns: null } }) },
+      { tag: "ip not a string", text: variant(function(d) { d.probe = { trace: "through", ip: 7, colo: "XXX", country: "XX", dns: null } }) },
+      { tag: "colo too long", text: variant(function(d) { d.probe = { trace: "through", ip: "203.0.113.7", colo: "XXXXXXXXXXXXXXXX", country: "XX", dns: null } }) },
+      { tag: "country with markup", text: variant(function(d) { d.probe = { trace: "through", ip: "203.0.113.7", colo: "XXX", country: "<i>", dns: null } }) },
       { tag: "no update", text: variant(function(d) { delete d.update }) },
       { tag: "update not an object", text: variant(function(d) { d.update = [true] }) },
       { tag: "available as string", text: update(function(u) { u.available = "true" }) },
@@ -692,6 +924,8 @@ TestCase {
       { tag: "status", action: "status", argv: ["status", "--json"] },
       { tag: "connect", action: "connect", argv: ["connect"] },
       { tag: "disconnect", action: "disconnect", argv: ["disconnect"] },
+      { tag: "probe", action: "probe", argv: ["status", "--json", "--probe"] },
+      { tag: "reconnect", action: "reconnect", argv: ["reconnect"] },
       { tag: "check", action: "check", argv: ["check", "--json"] },
     ]
   }
@@ -894,6 +1128,35 @@ TestCase {
     compare(Logic.runtimeFolderSeen(row.was, row.present), { present: row.present, rearm: row.rearm, poll: row.poll })
   }
 
+  // The primary button either launches its Job in a terminal or runs a
+  // switch command in the background; anything else does nothing.
+  function test_primary_button_dispatch_data() {
+    return [
+      { tag: "Reconnect", fixture: "outside", kind: "toggle" },
+      { tag: "Start service", fixture: "service_stopped", kind: "job" },
+      { tag: "Reconnect, backend broken", fixture: "outside", flags: { backendError: true }, kind: null },
+      { tag: "Reconnect, switch busy", fixture: "outside", flags: { toggleInFlight: "disconnect" }, kind: null },
+      { tag: "Start service, backend broken", fixture: "service_stopped", flags: { backendError: true }, kind: null },
+      { tag: "no button", fixture: "on", kind: null },
+      { tag: "Install", fixture: "not_installed", kind: "job" },
+      { tag: "Register", fixture: "not_registered", kind: "job" },
+      { tag: "Restart service", fixture: "daemon_unresponsive", kind: "job" },
+      { tag: "Restart to finish the update", fixture: "restart", kind: "job" },
+      { tag: "Update, not wired yet", fixture: "update", kind: null },
+    ]
+  }
+
+  function test_primary_button_dispatch(row) {
+    compare(Logic.primaryDispatch(viewOf(row.fixture, row.flags).primary), row.kind)
+  }
+
+  function test_primary_dispatch_refuses_anything_else() {
+    compare(Logic.primaryDispatch({ action: "connect", label: null, enabled: true }), null)
+    compare(Logic.primaryDispatch({ action: "uninstall", label: null, enabled: true }), null)
+    compare(Logic.primaryDispatch({ action: "constructor", label: null, enabled: true }), null)
+    compare(Logic.primaryDispatch({ action: "reconnect", label: null, enabled: "yes" }), null)
+  }
+
   // The Update Job isn't wired yet: neither position launches anything.
   function test_update_launches_nothing_yet() {
     compare(Logic.jobLaunch("/srv/oma-warp", viewOf("update").primary, "k9-x1"), null)
@@ -908,6 +1171,119 @@ TestCase {
   function test_only_job_actions_launch_a_terminal() {
     compare(Logic.jobLaunch("/srv/oma-warp", { action: "reconnect", label: null, enabled: true }, "k9-x1"), null)
     compare(Logic.jobLaunch("/srv/oma-warp", { action: "uninstall", label: null, enabled: true }, "k9-x1"), null)
+  }
+
+  // warp-cli gets 10 s per command in the backend; Reconnect runs two.
+  function test_switch_commands_get_a_deadline() {
+    compare(Logic.toggleDeadline("connect"), 15000)
+    compare(Logic.toggleDeadline("disconnect"), 15000)
+    compare(Logic.toggleDeadline("reconnect"), 25000)
+  }
+
+  // A Panel event for the probe schedule, written "type" or "type:detail":
+  // "polled:<name>" reports that Fixture, "polled:broken" a failed poll,
+  // and "toggleEnded:<action>" the end of that switch command.
+  function probeEvent(text) {
+    var parts = text.split(":")
+    var event = { type: parts[0] }
+    if (parts[0] === "polled") event.doc = parts[1] === "broken" ? null : Logic.parseStatus(fixture(parts[1]))
+    if (parts[0] === "toggleEnded") event.action = parts[1]
+    return event
+  }
+
+  // Drives the probe schedule through Panel events, as Panel.qml does, and
+  // reports how many probe processes were started, the most ever running
+  // at once, and whether a probe counts as in flight at the end.
+  function schedule(events) {
+    var state = Logic.probeIdle()
+    var starts = 0
+    var running = 0
+    var most = 0
+    events.forEach(function(text) {
+      var event = probeEvent(text)
+      if (event.type === "ended") running = Math.max(0, running - 1)
+      var step = Logic.probeStep(state, event)
+      state = step.state
+      if (step.start) {
+        starts += 1
+        running += 1
+        most = Math.max(most, running)
+      }
+    })
+    return { starts: starts, most: most, inFlight: Logic.probeInFlight(state) }
+  }
+
+  function test_opening_the_panel_probes_once() {
+    compare(schedule(["opened"]), { starts: 1, most: 1, inFlight: true })
+    compare(schedule(["opened", "opened"]), { starts: 1, most: 1, inFlight: true })
+  }
+
+  // The probe only writes its result for status to report, so it is still
+  // checking until a poll started after it ended has reported. A poll that
+  // was already running when it ended may predate the result.
+  function test_a_probe_is_in_flight_until_a_later_poll_reports_data() {
+    return [
+      { tag: "running", events: ["opened"], inFlight: true },
+      { tag: "ended, not polled yet", events: ["opened", "ended"], inFlight: true },
+      { tag: "ended, then polled", events: ["opened", "ended", "pollStarted", "polled:broken"], inFlight: false },
+      { tag: "poll already running when it ended", events: ["opened", "pollStarted", "ended", "polled:broken"], inFlight: true },
+      { tag: "then the queued poll", events: ["opened", "pollStarted", "ended", "polled:broken", "pollStarted", "polled:broken"], inFlight: false },
+      { tag: "ended twice", events: ["opened", "ended", "ended", "pollStarted", "polled:broken"], inFlight: false },
+    ]
+  }
+
+  function test_a_probe_is_in_flight_until_a_later_poll_reports(row) {
+    var result = schedule(row.events)
+    compare(result.starts, 1)
+    compare(result.inFlight, row.inFlight)
+  }
+
+  // Every change in the polled connection probes, open or closed, starting
+  // from the first one seen. A change while a probe runs makes its result
+  // stale: one fresh probe follows it, never two at once.
+  function test_connection_changes_probe_data() {
+    var poll = ["pollStarted"]
+    function polled(name) { return poll.concat(["polled:" + name]) }
+    return [
+      { tag: "first sighting", events: polled("on"), starts: 1, inFlight: true },
+      { tag: "unchanged", events: polled("on").concat(["ended"], polled("on"), polled("on")), starts: 1, inFlight: false },
+      { tag: "dropped on its own", events: polled("on").concat(["ended"], polled("on"), polled("dropped")), starts: 2, inFlight: true },
+      { tag: "and back", events: polled("on").concat(["ended"], polled("dropped"), ["ended"], polled("on")), starts: 3, inFlight: true },
+      { tag: "dropped during a probe", events: polled("on").concat(polled("dropped")), starts: 1, inFlight: true },
+      { tag: "then that probe ends", events: polled("on").concat(polled("dropped"), ["ended"]), starts: 2, inFlight: true },
+      { tag: "several changes, one fresh probe", events: polled("on").concat(polled("dropped"), polled("connecting"), polled("on"), ["ended"]), starts: 2, inFlight: true },
+      { tag: "fresh probe done", events: polled("on").concat(polled("dropped"), ["ended", "ended"], polled("dropped")), starts: 2, inFlight: false },
+      { tag: "a failed poll is no change", events: polled("on").concat(["ended"], polled("broken"), polled("on")), starts: 1, inFlight: false },
+      { tag: "blocked, then fixed", events: polled("service_stopped").concat(["ended"], polled("off")), starts: 2, inFlight: true },
+    ]
+  }
+
+  function test_connection_changes_probe(row) {
+    var result = schedule(row.events)
+    compare(result.starts, row.starts)
+    compare(result.most, 1)
+    compare(result.inFlight, row.inFlight)
+  }
+
+  // Reconnect can be over between two polls, so the connection may read the
+  // same before and after: its end probes anyway. The switch's own
+  // commands change the polled connection, which probes by itself.
+  function test_reconnect_probes_again_data() {
+    var settled = ["pollStarted", "polled:on", "ended", "pollStarted", "polled:on"]
+    return [
+      { tag: "reconnected", events: settled.concat(["toggleEnded:reconnect"]), starts: 2, inFlight: true },
+      { tag: "switched off", events: settled.concat(["toggleEnded:disconnect"]), starts: 1, inFlight: false },
+      { tag: "switched on", events: settled.concat(["toggleEnded:connect"]), starts: 1, inFlight: false },
+      { tag: "reconnected during a probe", events: ["pollStarted", "polled:on", "toggleEnded:reconnect"], starts: 1, inFlight: true },
+      { tag: "then that probe ends", events: ["pollStarted", "polled:on", "toggleEnded:reconnect", "ended"], starts: 2, inFlight: true },
+    ]
+  }
+
+  function test_reconnect_probes_again(row) {
+    var result = schedule(row.events)
+    compare(result.starts, row.starts)
+    compare(result.most, 1)
+    compare(result.inFlight, row.inFlight)
   }
 
   function test_a_check_is_cut_off_after_30_s() {
@@ -951,7 +1327,7 @@ TestCase {
     return [
       { tag: "off, connecting", fixture: "off", inFlight: "connect", checked: true, meta: "Off" },
       { tag: "connecting, disconnecting", fixture: "connecting", inFlight: "disconnect", checked: false, meta: "Connecting" },
-      { tag: "unconfirmed, disconnecting", fixture: "unconfirmed", inFlight: "disconnect", checked: false, meta: "Connected · not confirmed" },
+      { tag: "unconfirmed, disconnecting", fixture: "unconfirmed", inFlight: "disconnect", checked: false, meta: "Connected · checking" },
       { tag: "connecting found it unregistered", fixture: "not_registered", inFlight: "connect", checked: true, meta: "Needs attention" },
       { tag: "connecting found it not installed", fixture: "not_installed", inFlight: "connect", checked: true, meta: "Needs attention" },
       { tag: "disconnecting hung the daemon", fixture: "daemon_unresponsive", inFlight: "disconnect", checked: false, meta: "Needs attention" },

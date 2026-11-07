@@ -12,7 +12,8 @@ import "PanelLogic.js" as Logic
 // runs the backend from its allow-list, holds the flags, and binds to the
 // logic's output. Backend text only ever reaches plain-text sinks. Jobs run
 // detached in a floating terminal; their record only prompts a re-poll. The
-// update check runs beside status and never holds it up.
+// update check and the probe run beside status and never hold it up; status
+// reports what they found.
 Panel {
   id: root
   moduleName: "spitefulfr0g.oma-warp"
@@ -31,6 +32,8 @@ Panel {
   property bool pollClearsToggle: false
   property bool pollQueued: false
   property bool statusExited: false
+  // When to probe, and whether a probe counts as in flight: see probeStep().
+  property var probeState: Logic.probeIdle()
   // The background update check counts as in flight from its start until a
   // status poll started after it ended has reported, so a poll that was
   // already running when it ended can't start a second one.
@@ -47,6 +50,7 @@ Panel {
   function flags() {
     return {
       toggleInFlight: root.toggleInFlight !== "" ? root.toggleInFlight : null,
+      probeInFlight: Logic.probeInFlight(root.probeState),
       backendError: root.backendError,
       checkInFlight: root.checkInFlight,
       checkAbandonedAt: root.checkAbandonedAt,
@@ -89,6 +93,7 @@ Panel {
     statusProcess.command = argv
     statusProcess.running = true
     statusWatchdog.restart()
+    probeEvent({ type: "pollStarted" })
   }
 
   function statusFinished(exitCode, text) {
@@ -111,18 +116,25 @@ Panel {
       pollClearsCheck = false
     }
     if (Logic.view(latest, flags(), new Date()).check.start) startCheck()
+    probeEvent({ type: "polled", doc: doc })
     // Deferred so the finished process has let go of `running`.
     if (pollQueued) Qt.callLater(root.poll)
   }
 
   function flipSwitch() {
-    if (!view.toggle.enabled || toggleProcess.running || toggleInFlight !== "") return
-    var argv = Logic.backendCommand(pluginDir, view.toggle.action)
+    if (view.toggle.enabled) runToggle(view.toggle.action)
+  }
+
+  // connect, disconnect or reconnect, one at a time, in the background.
+  function runToggle(action) {
+    if (toggleProcess.running || toggleInFlight !== "") return
+    var argv = Logic.backendCommand(pluginDir, action)
     if (!argv) return
-    toggleInFlight = view.toggle.action
+    toggleInFlight = action
     toggleEnded = false
     toggleProcess.command = argv
     toggleProcess.running = true
+    toggleWatchdog.interval = Logic.toggleDeadline(action)
     toggleWatchdog.restart()
   }
 
@@ -130,7 +142,42 @@ Panel {
     toggleWatchdog.stop()
     if (toggleInFlight === "" || toggleEnded) return
     toggleEnded = true
+    probeEvent({ type: "toggleEnded", action: toggleInFlight })
     poll()
+  }
+
+  function probeEvent(event) {
+    var step = Logic.probeStep(probeState, event)
+    probeState = step.state
+    // Deferred so a probe that has just ended has let go of `running`.
+    if (step.start) Qt.callLater(root.startProbe)
+  }
+
+  function startProbe() {
+    var argv = Logic.backendCommand(pluginDir, "probe")
+    if (!argv || probeProcess.running) {
+      probeFinished()
+      return
+    }
+    probeProcess.command = argv
+    probeProcess.running = true
+    probeWatchdog.restart()
+  }
+
+  // Whatever the probe found is read from the next status poll, which only
+  // reports it while it still holds for the current connection.
+  function probeFinished() {
+    probeWatchdog.stop()
+    if (!probeState.running) return
+    probeEvent({ type: "ended" })
+    poll()
+  }
+
+  // The primary button: a Job in a terminal, or Reconnect in the background.
+  function pressPrimary() {
+    var kind = Logic.primaryDispatch(view.primary)
+    if (kind === "job") launchJob()
+    else if (kind === "toggle") runToggle(view.primary.action)
   }
 
   function startCheck() {
@@ -171,6 +218,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     poll()
+    probeEvent({ type: "opened" })
     Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
   }
 
@@ -196,6 +244,21 @@ Panel {
     id: statusWatchdog
     interval: 5000
     onTriggered: if (statusProcess.running) statusProcess.signal(9)
+  }
+
+  Process {
+    id: probeProcess
+    running: false
+    onRunningChanged: if (!running) root.probeFinished()
+  }
+
+  // `status --json --probe` holds itself to 5 s; past this it is hung. This
+  // also ends a probe that never started, so probing cannot stall.
+  Timer {
+    id: probeWatchdog
+    interval: Logic.PROBE_DEADLINE
+    onTriggered: if (probeProcess.running) probeProcess.signal(9)
+                 else root.probeFinished()
   }
 
   Process {
@@ -242,11 +305,11 @@ Panel {
     onRunningChanged: if (!running) root.toggleFinished()
   }
 
-  // warp-cli gets 10 s in the backend; this also ends a switch command that
-  // never started, so the switch cannot stay disabled.
+  // warp-cli gets 10 s per command in the backend; this also ends a switch
+  // command that never started, so the switch cannot stay disabled.
   Timer {
     id: toggleWatchdog
-    interval: 15000
+    interval: Logic.toggleDeadline("connect")
     onTriggered: if (toggleProcess.running) toggleProcess.signal(9)
                  else root.toggleFinished()
   }
@@ -457,6 +520,79 @@ Panel {
           }
         }
 
+        // Connected, but nothing confirms it: neutral, not a Problem.
+        BorderSurface {
+          visible: root.view.note !== null && root.view.note.kind === "unconfirmed"
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          implicitHeight: unconfirmedText.implicitHeight + Style.space(16)
+          color: Qt.alpha(root.foreground, 0.04)
+          borderSpec: Border.controlSpec("normal", Qt.alpha(root.foreground, 0.12), Qt.alpha(root.foreground, 0.12))
+          radius: Style.cornerRadius
+
+          Text {
+            id: unconfirmedGlyph
+            textFormat: Text.PlainText
+            anchors.left: parent.left
+            anchors.top: unconfirmedText.top
+            anchors.leftMargin: Style.space(10)
+            text: "?"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+            font.bold: true
+          }
+
+          Text {
+            id: unconfirmedText
+            textFormat: Text.PlainText
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: unconfirmedGlyph.right
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(9)
+            anchors.rightMargin: Style.space(10)
+            text: root.view.note ? root.say(root.view.note.line) : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // The exit IP: its location only while Through Cloudflare, muted and
+        // marked "not WARP" when it is the real address.
+        Item {
+          visible: root.view.ip.visible
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          implicitHeight: Math.max(ipLabel.implicitHeight, ipValue.implicitHeight)
+
+          Text {
+            id: ipLabel
+            textFormat: Text.PlainText
+            anchors.left: parent.left
+            anchors.baseline: ipValue.baseline
+            text: root.say(root.view.ip.label)
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+          }
+
+          Text {
+            id: ipValue
+            textFormat: Text.PlainText
+            anchors.left: ipLabel.right
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(12)
+            horizontalAlignment: Text.AlignRight
+            text: root.say(root.view.ip.value) + (root.view.ip.suffix ? " " + root.say(root.view.ip.suffix) : "")
+            color: root.view.ip.muted ? Commons.Color.muted : root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.bodySize
+            wrapMode: Text.WrapAnywhere
+          }
+        }
+
         // A verified newer release: its line and versions above the primary
         // Update button, or beside a regular Update button of its own when
         // something else holds the primary slot.
@@ -579,7 +715,7 @@ Panel {
           text: root.view.primary ? root.say(root.view.primary.label) : ""
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.launchJob()
+          onClicked: root.pressPrimary()
         }
       }
     }

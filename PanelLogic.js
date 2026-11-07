@@ -48,8 +48,10 @@ function ago(iso, now) {
 var PYTHON = "/usr/bin/python3"
 var COMMANDS = {
   status: ["status", "--json"],
+  probe: ["status", "--json", "--probe"],
   connect: ["connect"],
   disconnect: ["disconnect"],
+  reconnect: ["reconnect"],
   check: ["check", "--json"]
 }
 
@@ -83,6 +85,14 @@ function jobLaunch(dir, primary, jobId) {
   if (typeof jobId !== "string" || !JOB_ID.test(jobId)) return null
   var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", primary.action, "--job-id", jobId]
   return [LAUNCHER, argv.map(shellQuote).join(" ")]
+}
+
+// What pressing the primary button does: "job" launches its Job in a
+// terminal, "toggle" runs Reconnect in the background, null does nothing.
+function primaryDispatch(primary) {
+  if (!primary || primary.enabled !== true) return null
+  if (LAUNCHED_JOBS.indexOf(primary.action) >= 0) return "job"
+  return primary.action === "reconnect" ? "toggle" : null
 }
 
 // A fresh job id from the time in ms and a random draw in [0, 1).
@@ -120,6 +130,64 @@ function runtimeFolderSeen(wasPresent, present) {
   return { present: present, rearm: present, poll: present && wasPresent === false }
 }
 
+// How long the Panel waits on a switch command before ending it: warp-cli
+// gets 10 s per command in the backend, and Reconnect runs two.
+function toggleDeadline(action) {
+  return action === "reconnect" ? 25000 : 15000
+}
+
+// `status --json --probe` holds itself to 5 s; the Panel ends it past this.
+var PROBE_DEADLINE = 8000
+
+// The probe schedule. The probe runs as its own process, at most one at a
+// time, so it never holds up status. A probe still counts as in flight
+// after it ends, until a status poll started after that reports what it
+// found: the backend keeps the result only while it holds for the current
+// connection, so status is the one place it is read from.
+function probeIdle() {
+  return { seen: false, connection: null, wanted: false, running: false, ended: false, clearing: false }
+}
+
+function probeInFlight(state) {
+  return state.running || state.ended
+}
+
+// One Panel event, and whether it starts a probe process now:
+//   {type: "opened"}       the Panel opened
+//   {type: "ended"}        the probe process ended, however it ended
+//   {type: "pollStarted"}  a status poll started
+//   {type: "polled", doc}  that poll reported doc, or null when it failed
+//   {type: "toggleEnded", action}  a switch command ended
+// The first connection seen counts as a change, from not knowing it.
+function probeStep(state, event) {
+  var next = { seen: state.seen, connection: state.connection, wanted: state.wanted,
+               running: state.running, ended: state.ended, clearing: state.clearing }
+  if (event.type === "opened" && !probeInFlight(next)) next.wanted = true
+  if (event.type === "toggleEnded" && event.action === "reconnect") next.wanted = true
+  if (event.type === "ended" && next.running) {
+    next.running = false
+    next.ended = true
+    next.clearing = false
+  }
+  if (event.type === "pollStarted") next.clearing = next.ended
+  if (event.type === "polled" && next.clearing) {
+    next.ended = false
+    next.clearing = false
+  }
+  if (event.type === "polled" && event.doc) {
+    var connection = event.doc.client.connection
+    if (!next.seen || connection !== next.connection) next.wanted = true
+    next.seen = true
+    next.connection = connection
+  }
+  var start = next.wanted && !next.running
+  if (start) {
+    next.wanted = false
+    next.running = true
+  }
+  return { state: next, start: start }
+}
+
 function pollInterval(opened) {
   return opened ? 3000 : 15000
 }
@@ -130,6 +198,8 @@ function isObject(value) {
 
 var CONNECTIONS = [null, "connected", "connecting", "disconnected"]
 var JOB_ACTIONS = ["install", "update", "restart", "start", "register"]
+// Background switch commands: the Panel waits on them, one at a time.
+var TOGGLE_ACTIONS = ["connect", "disconnect", "reconnect"]
 
 // The contract's Problems in precedence order, each with its one fix and
 // blocking flag. The backend classifies; the Panel only checks the list.
@@ -198,6 +268,27 @@ function isUpdate(value, installed) {
   return value.available === false || value.available === null
 }
 
+var TRACES = ["through", "outside", "failed"]
+var IP = /^[0-9A-Fa-f:.]{2,45}$/
+var PLACE = /^[A-Za-z]{2,3}$/
+
+function isNullOr(value, test) {
+  return value === null || test(value)
+}
+
+function isPlace(value) {
+  return typeof value === "string" && PLACE.test(value)
+}
+
+// The backend's probe for the current connection, or null for none. Its
+// address and location only ever reach plain-text sinks, short as they are.
+function isProbe(value) {
+  if (value === null) return true
+  return isObject(value) && TRACES.indexOf(value.trace) >= 0
+    && isNullOr(value.ip, function(ip) { return typeof ip === "string" && IP.test(ip) })
+    && isNullOr(value.colo, isPlace) && isNullOr(value.country, isPlace)
+}
+
 // `status --json` output is untrusted text. Anything that is not a schema-1
 // document this Panel understands answers null: the backend is broken.
 function parseStatus(text) {
@@ -213,6 +304,7 @@ function parseStatus(text) {
   if (!isUpdate(doc.update, doc.client.version)) return null
   if (!isProblemList(doc.problems)) return null
   if (!isJob(doc.job)) return null
+  if (!isProbe(doc.probe)) return null
   return doc
 }
 
@@ -220,12 +312,13 @@ var META = { disconnected: "meta.off", connecting: "meta.connecting", connected:
 
 // A running Job is calm, never crossed out, even over the Problem it fixes.
 // Otherwise any Problem crosses the cloud out. Connected earns the outlined
-// cloud until a probe confirms Through Cloudflare; everything else is the
-// full cloud, dimmed. Whatever the cloud, a dot says maintenance is
-// waiting.
-function barIcon(connection, job, problem, dot) {
+// cloud until a probe confirms Through Cloudflare, which earns the full one;
+// everything else is the full cloud, dimmed. Whatever the cloud, a dot says
+// maintenance is waiting.
+function barIcon(connection, job, problem, through, dot) {
   if (job) return { glyph: CLOUD, opacity: DIMMED, dot: dot }
   if (problem) return { glyph: CLOUD_OFF, opacity: 1, dot: dot }
+  if (through) return { glyph: CLOUD, opacity: 1, dot: dot }
   if (connection === "connected") return { glyph: CLOUD_OUTLINE, opacity: 1, dot: dot }
   return { glyph: CLOUD, opacity: DIMMED, dot: dot }
 }
@@ -247,9 +340,11 @@ function maintenanceDot(doc) {
   return updateAvailable(doc) || restartNeeded(doc)
 }
 
-function heroMeta(connection, job, problem) {
+function heroMeta(connection, job, problem, through, checking) {
   if (job) return "meta.job"
   if (problem) return "meta.problem"
+  if (through) return "meta.through"
+  if (checking && connection === "connected") return "meta.checking"
   return Object.prototype.hasOwnProperty.call(META, connection) ? META[connection] : "meta.unknown"
 }
 
@@ -263,12 +358,36 @@ function problemNote(problem) {
   return { kind: "problem", line: message("problem." + problem.code), detail: message("why." + problem.code) }
 }
 
+// Connected with nothing to confirm it: a neutral note, not a Problem.
+function unconfirmedNote() {
+  return { kind: "unconfirmed", line: message("unconfirmed"), detail: null }
+}
+
+// The exit IP, with Cloudflare's location only while Through Cloudflare.
+function ipRow(probe, through, checking, visible) {
+  var row = { visible: visible, label: message("ip.label"), value: message("ip.none"), muted: true, suffix: null }
+  if (checking) {
+    row.value = message("ip.checking")
+    row.muted = false
+  } else if (probe && probe.ip !== null) {
+    row.value = message("ip.address", { ip: probe.ip })
+    row.muted = !through
+    if (!through) row.suffix = message("ip.notWarp")
+    else if (probe.colo !== null && probe.country !== null) {
+      row.suffix = message("ip.location", { colo: probe.colo, country: probe.country })
+    }
+  }
+  return row
+}
+
 // The one thing to do now, as a full-width button. A Job the Panel can't
-// launch yet still shows as the fix, disabled.
-function primaryButton(problem, broken) {
+// launch yet still shows as the fix, disabled. Reconnect is a switch
+// command, so it waits for any other to end.
+function primaryButton(problem, broken, toggling) {
   if (!problem || !problem.fix) return null
   var unwired = JOB_ACTIONS.indexOf(problem.fix) >= 0 && LAUNCHED_JOBS.indexOf(problem.fix) < 0
-  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired }
+  var waiting = problem.fix === "reconnect" && toggling
+  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired && !waiting }
 }
 
 // The restart row: finishing an installed update, with a full-width Restart
@@ -343,24 +462,32 @@ function view(doc, flags, now) {
   // Nothing else is shown or offered while a Job runs.
   var problem = doc && !job && doc.problems.length ? doc.problems[0] : null
   var on = connection === "connected" || connection === "connecting"
-  var inFlight = flags.toggleInFlight === "connect" || flags.toggleInFlight === "disconnect" ? flags.toggleInFlight : null
+  var inFlight = TOGGLE_ACTIONS.indexOf(flags.toggleInFlight) >= 0 ? flags.toggleInFlight : null
   var broken = flags.backendError === true
-  var fix = primaryButton(problem, broken)
+  var probe = doc ? doc.probe : null
+  // The only way to earn the full cloud: connected, and a probe on this
+  // connection saw the traffic arrive through WARP.
+  var through = connection === "connected" && probe !== null && probe.trace === "through"
+  // A probe in flight stands in for a result only where there is none yet,
+  // and one follows every switch command.
+  var checking = (flags.probeInFlight === true || !!inFlight) && probe === null
+  var meta = heroMeta(connection, job, problem, through, checking)
+  var fix = primaryButton(problem, broken, !!inFlight)
   var restart = job ? null : restartRow(doc, fix, broken)
   var update = job ? null : updateRow(doc, fix, broken)
   return {
     greyed: broken,
     banner: broken ? message("backendError") : null,
-    bar: barIcon(connection, job, problem, maintenanceDot(doc)),
-    hero: { title: message("title"), meta: message(heroMeta(connection, job, problem)) },
-    note: job ? jobNote(job, now) : problem ? problemNote(problem) : null,
-    ip: { visible: !job && !(problem && problem.blocking) },
+    bar: barIcon(connection, job, problem, through, maintenanceDot(doc)),
+    hero: { title: message("title"), meta: message(meta) },
+    note: job ? jobNote(job, now) : problem ? problemNote(problem) : meta === "meta.unconfirmed" ? unconfirmedNote() : null,
+    ip: ipRow(probe, through, checking, !job && !(problem && problem.blocking)),
     primary: fix || (restart ? restart.button : update && update.primary ? update.button : null),
     restart: restart,
     update: update,
     check: { start: backgroundCheck(doc, flags, now) },
     toggle: {
-      checked: inFlight ? inFlight === "connect" : on,
+      checked: inFlight ? inFlight !== "disconnect" : on,
       enabled: known && !job && !inFlight && !broken,
       busy: !!inFlight,
       action: on ? "disconnect" : "connect"
