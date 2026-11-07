@@ -3,33 +3,45 @@
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def qt_tool(name):
+    # /usr/bin carries Qt 5's tools on Arch; the shell is Qt 6.
+    path = Path(os.environ.get('OMA_WARP_QT_BIN', '/usr/lib/qt6/bin')) / name
+    return str(path) if os.access(path, os.X_OK) else name
 
 
 def main():
     qml = sorted(str(path.relative_to(ROOT)) for path in ROOT.rglob('*.qml') if '.git' not in path.parts)
     qml_tests = sorted(ROOT.rglob('tst_*.qml'))
-    steps = [
-        ('pytest', ['python3', '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider']),
-        ('qmllint', ['qmllint', *qml] if qml else None),
-        ('qmltestrunner', ['qmltestrunner', '-input', 'tests'] if qml_tests else None),
-        ('manifest', ['omarchy', 'plugin', 'validate', str(ROOT)]),
-        ('scrub', [str(ROOT / 'dev/scrub')]),
-    ]
-    failed = False
-    for name, command in steps:
-        print(f'== {name} ==', flush=True)
-        if command is None:
-            print('No inputs yet; passed.')
-            continue
-        try:
-            result = subprocess.run(command, cwd=ROOT, check=False,
-                                    env={**os.environ, 'QML_XHR_ALLOW_FILE_READ': '1', 'PYTHONDONTWRITEBYTECODE': '1'})
-            failed |= result.returncode != 0
-        except OSError as error:
-            print(f'{name}: {error.strerror}', flush=True)
-            failed = True
+    shell = Path(os.environ.get('OMARCHY_PATH', '/usr/share/omarchy')) / 'shell'
+    with tempfile.TemporaryDirectory(prefix='oma-warp-check-') as imports:
+        # The shell serves its own modules as qs.*; lint resolves them here.
+        os.symlink(shell, Path(imports) / 'qs')
+        steps = [
+            ('pytest', ['python3', '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider']),
+            ('qmllint', [qt_tool('qmllint'), '--max-warnings', '0', '-I', imports, *qml] if qml else None),
+            ('qmltestrunner', [qt_tool('qmltestrunner'), '-input', 'tests'] if qml_tests else None),
+            ('manifest', ['omarchy', 'plugin', 'validate', str(ROOT)]),
+            ('scrub', [str(ROOT / 'dev/scrub')]),
+        ]
+        env = {**os.environ, 'QML_XHR_ALLOW_FILE_READ': '1', 'PYTHONDONTWRITEBYTECODE': '1',
+               'QT_QPA_PLATFORM': 'offscreen'}
+        failed = False
+        for name, command in steps:
+            print(f'== {name} ==', flush=True)
+            if command is None:
+                print('No inputs yet; passed.')
+                continue
+            try:
+                result = subprocess.run(command, cwd=ROOT, check=False, env=env)
+                failed |= result.returncode != 0
+            except OSError as error:
+                print(f'{name}: {error.strerror}', flush=True)
+                failed = True
     return int(failed)
 
 
