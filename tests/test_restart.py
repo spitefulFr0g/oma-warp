@@ -146,3 +146,21 @@ def test_interrupt_during_restore_wait_releases_job():
     assert main(['restart', '--job-id', 'interrupt'], system=system) == 130
     assert status(system)['job'] is None
     assert not system.locked
+
+
+def test_restart_discards_probe_from_previous_service_lifetime():
+    from pathlib import Path
+    class ImmediateRestore(RestartSystem):
+        def run_terminal(self, argv):
+            result = super().run_terminal(argv)
+            self.outputs[('warp-cli', '-j', 'status')] = '{"status":"Connected"}'
+            return result
+    system = ImmediateRestore()
+    probe = json.loads((Path(__file__).parent / 'fixtures/on.json').read_text())['probe']
+    system.files[system.runtime_dir / 'probe.json'] = json.dumps({
+        'tag': {'connection': 'connected', 'service_started': 'Thu 01 Oct 2026 13:00:00 UTC'},
+        'probe': probe,
+    })
+    assert status(system)['probe'] == probe
+    assert main(['restart', '--job-id', 'fresh-service'], system=system) == 0
+    assert status(system)['probe'] is None

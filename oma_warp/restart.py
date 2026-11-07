@@ -3,6 +3,7 @@ import subprocess
 
 from .client import document
 from .jobs import run_job
+from .probe import invalidate
 
 
 def connection_state(system, *, timeout=1.5):
@@ -22,6 +23,7 @@ def restart_and_restore(system):
     Polling observes automatic restoration; it never retries a mutation.
     """
     prior = connection_state(system)
+    invalidate(system)
     result = system.run_terminal(['sudo', 'systemctl', 'restart', 'warp-svc'])
     if result.returncode != 0:
         system.write('WARP did not reconnect')
