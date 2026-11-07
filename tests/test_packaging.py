@@ -60,9 +60,15 @@ class BuildPackageTests(unittest.TestCase):
             result = subprocess.CompletedProcess([], 1, "make output", "missing dependencies: chrpath")
             with patch.object(packaging.os, "geteuid", return_value=1000), patch.object(
                 packaging.shutil, "which", return_value="/usr/bin/makepkg"
-            ), patch.object(packaging.subprocess, "run", return_value=result):
+            ), patch.object(packaging.subprocess, "run", return_value=result) as runner:
                 with self.assertRaisesRegex(packaging.PackagingError, "Install the missing build dependencies") as error:
                     packaging.build_package(build_dir)
+                # Dependency setup must leave sudo/pacman confirmation visible.
+                self.assertFalse("capture_output" in runner.call_args.kwargs)
+                for stream in ("stdin", "stdout", "stderr"):
+                    self.assertIsNone(runner.call_args.kwargs.get(stream))
+                self.assertIn("--syncdeps", runner.call_args.args[0])
+                self.assertNotIn("--noconfirm", runner.call_args.args[0])
                 self.assertIn("make output", str(error.exception))
                 self.assertIn("missing dependencies: chrpath", str(error.exception))
 

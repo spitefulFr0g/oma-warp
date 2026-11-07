@@ -139,15 +139,15 @@ def build_package(build_dir: Path, *, system=None) -> Path:
     if makepkg is None:
         raise PackagingError("makepkg is unavailable; install the Arch base-devel package group")
     try:
-        result = system.run_build([makepkg, "--cleanbuild", "--noconfirm"], cwd=build_dir)
+        result = system.run_build([makepkg, "--cleanbuild", "--syncdeps"], cwd=build_dir)
     except OSError as exc:
         raise PackagingError(f"could not start makepkg: {exc}") from exc
     if result.returncode:
-        output = f"{result.stdout}\n{result.stderr}".lower()
+        output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
         if any(marker in output for marker in ("missing dependencies", "could not satisfy dependencies", "not found")):
             guidance = "Install the missing build dependencies (including libarchive and chrpath), then retry."
         else:
-            guidance = "Review makepkg output and ensure the listed Arch dependencies are installed."
+            guidance = "Review the makepkg output above, confirm dependency installation when prompted, and retry."
         details = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
         if len(details) > 4000:
             details = details[-4000:]

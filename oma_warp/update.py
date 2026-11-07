@@ -10,6 +10,12 @@ def timestamp(now):
     return now.isoformat().replace('+00:00', 'Z')
 
 
+def successful_cache(release, verified_at):
+    """The verified result shared by Check, Install and Update."""
+    return {'latest': release.version, 'verified_at': verified_at,
+            'attempted_at': verified_at, 'last_error': None}
+
+
 def read_cache(system):
     value = system.read_json(system.cache_dir / 'update.json')
     if not isinstance(value, dict):
@@ -39,12 +45,13 @@ def check(system):
         release = repository.latest()
         with system.temporary_directory(prefix='oma-warp-check-') as scratch:
             repository.download(release, Path(scratch))
-        document = {'latest': release.version, 'verified_at': timestamp(system.now()),
-                    'last_error': None}
-    except RepositoryError as exc:
+        document = successful_cache(release, timestamp(system.now()))
+    except (RepositoryError, KeyboardInterrupt) as exc:
+        # The Panel's watchdog sends SIGINT before resorting to a hard kill.
+        # Persist a catchable timeout as a failed attempt for the next process.
         document = {'latest': document.get('latest'),
                     'verified_at': document.get('verified_at'),
-                    'last_error': 'network' if isinstance(exc, NetworkError) else 'verification'}
+                    'last_error': 'network' if isinstance(exc, (NetworkError, KeyboardInterrupt)) else 'verification'}
     document['attempted_at'] = timestamp(system.now())
     system.write_json(system.cache_dir / 'update.json', document)
     return document
@@ -86,9 +93,7 @@ def update(system, job_id):
             with system.temporary_directory(prefix='oma-warp-update-') as directory:
                 deb = repository.download(release, Path(directory))
                 now = timestamp(system.now())
-                system.write_json(system.cache_dir / 'update.json', {
-                    'latest': release.version, 'verified_at': now,
-                    'attempted_at': now, 'last_error': None})
+                system.write_json(system.cache_dir / 'update.json', successful_cache(release, now))
                 facts = gather(system)
                 installed = facts.client['version']
                 if installed is None:
