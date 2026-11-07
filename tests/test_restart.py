@@ -82,7 +82,7 @@ def test_restore_at_end_of_window_does_not_issue_unnecessary_connect():
 
 def test_disconnected_and_unknown_prior_states_never_connect():
     from subprocess import TimeoutExpired
-    for prior in ('Disconnected', 'Connecting', 'NewState', None):
+    for prior in ('Connecting', 'NewState', None):
         for restored in ('Disconnected', 'Connected', 'Connecting'):
             system = RestartSystem(prior=prior, restored=restored)
             assert main(['restart', '--job-id', 'no-connect'], system=system) == 0
@@ -181,3 +181,27 @@ def test_single_connect_fallback_observes_asynchronous_connection():
     assert system.commands == [['sudo', 'systemctl', 'restart', 'warp-svc'], ['warp-cli', 'connect']]
     assert system.elapsed <= 20
     assert system.messages[-1] == 'Connected again'
+
+
+def test_disconnected_prior_is_restored_with_at_most_one_disconnect():
+    for restored in ('Disconnected', 'Connected', 'Connecting'):
+        for succeeds in (True, False):
+            class DisconnectFallback(RestartSystem):
+                def run(self, argv, *, timeout):
+                    if argv == ['warp-cli', 'disconnect']:
+                        self.commands.append(argv)
+                        if succeeds:
+                            self.restored = 'Disconnected'
+                            self.outputs[('warp-cli', '-j', 'status')] = '{"status":"Disconnected"}'
+                        return CompletedProcess(argv, 0 if succeeds else 4, '', '')
+                    return super().run(argv, timeout=timeout)
+            system = DisconnectFallback(prior='Disconnected', restored=restored)
+            expected = 0 if restored == 'Disconnected' or succeeds else 1
+            assert main(['restart', '--job-id', 'stay-off'], system=system) == expected
+            expected_commands = [['sudo', 'systemctl', 'restart', 'warp-svc']]
+            if restored != 'Disconnected':
+                expected_commands.append(['warp-cli', 'disconnect'])
+            assert system.commands == expected_commands
+            if expected == 0:
+                assert json.loads(system.outputs[('warp-cli', '-j', 'status')])['status'] == 'Disconnected'
+            assert status(system)['job'] is None

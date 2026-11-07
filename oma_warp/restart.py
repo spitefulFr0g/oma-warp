@@ -40,21 +40,21 @@ def restart_and_restore(system):
     else:
         # Observe once at the deadline before deciding a fallback is needed.
         current = connection_state(system)
-    if prior == 'Connected' and current != 'Connected':
+    if prior is not None and current != prior:
         try:
-            system.run(['warp-cli', 'connect'], timeout=10)
+            system.run(['warp-cli', 'connect' if prior == 'Connected' else 'disconnect'], timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             pass
-        # connect acknowledges a request before the tunnel necessarily exists.
-        # Observe it briefly, without issuing another connect or restart.
+        # A toggle acknowledges a request before the state necessarily changes.
+        # Observe it briefly, without issuing another toggle or restart.
         fallback_deadline = system.monotonic() + 5
         current = connection_state(system)
-        while current != 'Connected' and (remaining := fallback_deadline - system.monotonic()) > 0:
+        while current != prior and (remaining := fallback_deadline - system.monotonic()) > 0:
             system.wait(min(0.5, remaining))
             remaining = fallback_deadline - system.monotonic()
             current = connection_state(system, timeout=min(1.5, remaining) if remaining > 0 else 1.5)
     system.write('Connected again' if current == 'Connected' else 'WARP did not reconnect')
-    return int(prior == 'Connected' and current != 'Connected')
+    return int(prior is not None and current != prior)
 
 
 def restart(system, job_id):
