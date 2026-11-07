@@ -88,7 +88,14 @@ def assert_contract(test, doc):
     test.assertEqual(codes, sorted(codes, key=list(PROBLEMS).index))
     if any(problem['blocking'] for problem in doc['problems']):
         test.assertEqual(len(codes), 1)
-    test.assertLessEqual(len([code for code in codes if code.startswith('dns_')]), 1)
+    dns_codes = [code for code in codes if code.startswith('dns_')]
+    test.assertLessEqual(len(dns_codes), 1)
+    expected_dns = ('dns_' + probe['dns'] if probe is not None
+                    and probe['dns'] in ('broken', 'bypassed', 'shared') else None)
+    test.assertEqual(dns_codes, [expected_dns] if expected_dns else [])
+    if any(not problem['blocking'] for problem in doc['problems']):
+        test.assertEqual(client['connection'], 'connected')
+        test.assertIsNotNone(probe)
     test.assertEqual('service_stopped' in codes, client['service'] == 'stopped')
     test.assertEqual('daemon_unresponsive' in codes, client['daemon'] == 'unresponsive')
     test.assertEqual('not_registered' in codes, client['registered'] is False)
@@ -161,4 +168,20 @@ def test_contract_requires_blocking_problem_to_match_its_fact():
         fix, blocking = PROBLEMS[code]
         doc['problems'] = [dict(code=code, fix=fix, blocking=blocking)]
         with test.assertRaises(AssertionError):
+            assert_contract(test, doc)
+
+
+def test_contract_requires_dns_problem_to_match_probe_and_connected_client():
+    import copy
+    test = unittest.TestCase()
+    original = json.loads((Path(__file__).parent / 'fixtures/dns_bypassed.json').read_text())
+    for change in ('missing', 'wrong verdict', 'no probe', 'disconnected'):
+        doc = copy.deepcopy(original)
+        if change == 'missing': doc['problems'] = []
+        if change == 'wrong verdict': doc['probe']['dns'] = 'broken'
+        if change == 'no probe': doc['probe'] = None
+        if change == 'disconnected':
+            doc['client']['connection'] = 'disconnected'
+            doc['probe']['dns'] = None
+        with test.subTest(change=change), test.assertRaises(AssertionError):
             assert_contract(test, doc)

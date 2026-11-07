@@ -20,6 +20,11 @@ def problems(client, probe, installed=None, operation_mode=None):
     if (operation_mode == 'warp' and client['connection'] == 'connected'
             and probe is not None and probe['trace'] == 'outside'):
         raised.append({'code': 'not_through_cloudflare', 'fix': 'reconnect', 'blocking': False})
+    if (operation_mode == 'warp' and client['connection'] == 'connected'
+            and probe is not None and probe.get('dns') in ('broken', 'bypassed', 'shared')):
+        verdict = probe['dns']
+        raised.append({'code': 'dns_' + verdict,
+                       'fix': 'reconnect' if verdict == 'bypassed' else None, 'blocking': False})
     return raised
 
 
