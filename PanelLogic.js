@@ -86,11 +86,33 @@ function jobId(nowMs, random) {
   return Math.floor(Math.abs(Number(nowMs) || 0)).toString(36) + "-" + draw.toString(36)
 }
 
+// $XDG_RUNTIME_DIR, absolute and without a trailing slash, or "" for none.
+function runtimeDirPath(runtimeDir) {
+  var dir = typeof runtimeDir === "string" ? runtimeDir.replace(/\/+$/, "") : ""
+  return dir.charAt(0) === "/" ? dir : ""
+}
+
 // The live Job's record, watched so a Job's start and end re-poll at once.
 // $XDG_RUNTIME_DIR/oma-warp/job.json, as the backend writes it.
 function jobRecordPath(runtimeDir) {
-  var dir = typeof runtimeDir === "string" ? runtimeDir.replace(/\/+$/, "") : ""
-  return dir.charAt(0) === "/" ? dir + "/oma-warp/job.json" : ""
+  var dir = runtimeDirPath(runtimeDir)
+  return dir ? dir + "/oma-warp/job.json" : ""
+}
+
+// The backend's folder in the runtime dir, spelled so that only a folder is
+// found there: anything else at that name looks absent and is never read.
+function runtimeFolderPath(runtimeDir) {
+  var dir = runtimeDirPath(runtimeDir)
+  return dir ? dir + "/oma-warp/." : ""
+}
+
+// A look at that folder. A file watch needs its folder to exist when it is
+// armed and dies with it, so every sighting re-arms the record watch. A
+// folder that has just appeared may already hold a record written before the
+// watch could see it, so that sighting polls too. The first look (wasPresent
+// null) never polls: the Panel polls on start.
+function runtimeFolderSeen(wasPresent, present) {
+  return { present: present, rearm: present, poll: present && wasPresent === false }
 }
 
 function pollInterval(opened) {

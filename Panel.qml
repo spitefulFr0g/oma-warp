@@ -165,13 +165,10 @@ Panel {
   }
 
   // A Job writes job.json as it starts and removes it as it ends: either
-  // change re-polls at once. The contents are never read here; status
-  // reports the Job only while its process is alive.
-  FileView {
-    path: Logic.jobRecordPath(Quickshell.env("XDG_RUNTIME_DIR"))
-    watchChanges: true
-    printErrors: false
-    onFileChanged: root.poll()
+  // change re-polls at once.
+  JobRecordWatch {
+    runtimeDir: Quickshell.env("XDG_RUNTIME_DIR")
+    onPollNeeded: root.poll()
   }
 
   Timer {

@@ -346,6 +346,41 @@ TestCase {
     compare(Logic.jobRecordPath(row.dir), row.path)
   }
 
+  // The runtime dir itself is watched for the backend's folder coming and
+  // going; the folder is looked at through a path only a folder satisfies.
+  function test_runtime_folder_is_looked_at_from_the_runtime_dir_data() {
+    return [
+      { tag: "runtime dir", dir: "/run/user/4242", watched: "/run/user/4242", folder: "/run/user/4242/oma-warp/." },
+      { tag: "trailing slash", dir: "/run/user/4242/", watched: "/run/user/4242", folder: "/run/user/4242/oma-warp/." },
+      { tag: "unset", dir: undefined, watched: "", folder: "" },
+      { tag: "relative", dir: "run/user/4242", watched: "", folder: "" },
+    ]
+  }
+
+  function test_runtime_folder_is_looked_at_from_the_runtime_dir(row) {
+    compare(Logic.runtimeDirPath(row.dir), row.watched)
+    compare(Logic.runtimeFolderPath(row.dir), row.folder)
+  }
+
+  // The record watch only works while its folder exists, so every sighting
+  // re-arms it. A folder that has just appeared may already hold a record
+  // written before the watch could see it, so that sighting also polls; the
+  // first look at startup does not, since the Panel polls on start anyway.
+  function test_seeing_the_runtime_folder_re_arms_the_record_watch_data() {
+    return [
+      { tag: "first look, present", was: null, present: true, rearm: true, poll: false },
+      { tag: "first look, absent", was: null, present: false, rearm: false, poll: false },
+      { tag: "appeared", was: false, present: true, rearm: true, poll: true },
+      { tag: "still there", was: true, present: true, rearm: true, poll: false },
+      { tag: "gone", was: true, present: false, rearm: false, poll: false },
+      { tag: "still gone", was: false, present: false, rearm: false, poll: false },
+    ]
+  }
+
+  function test_seeing_the_runtime_folder_re_arms_the_record_watch(row) {
+    compare(Logic.runtimeFolderSeen(row.was, row.present), { present: row.present, rearm: row.rearm, poll: row.poll })
+  }
+
   // Reconnect is a background command, not a terminal Job.
   function test_only_job_actions_launch_a_terminal() {
     compare(Logic.jobLaunch("/srv/oma-warp", { action: "reconnect", label: null, enabled: true }, "k9-x1"), null)
