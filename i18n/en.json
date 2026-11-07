@@ -28,6 +28,9 @@
   "update.line": "Update available",
   "update.versions": "{from} → {to}",
   "update.button": "Update",
+  "restart.line": "Restart to finish the update",
+  "restart.detail": "{v} installed, old service still running",
+  "restart.button": "Restart",
   "time.s": "{n} s ago",
   "time.min": "{n} min ago",
   "time.h": "{n} h ago"

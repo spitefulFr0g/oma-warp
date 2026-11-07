@@ -521,6 +521,53 @@ Panel {
           }
         }
 
+        // A new client under the old service: its line and detail sit right
+        // above the full-width Restart, below any small Update row.
+        Item {
+          visible: root.view.restart !== null
+          width: parent.width
+          opacity: root.view.greyed ? 0.38 : 1
+          implicitHeight: restartColumn.implicitHeight
+
+          Rectangle {
+            id: restartDot
+            anchors.left: parent.left
+            anchors.verticalCenter: restartColumn.verticalCenter
+            width: Style.space(6)
+            height: width
+            radius: width / 2
+            color: button.activeColor
+          }
+
+          Column {
+            id: restartColumn
+            anchors.left: restartDot.right
+            anchors.right: parent.right
+            anchors.leftMargin: Style.space(7)
+            spacing: Style.space(2)
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.restart ? root.say(root.view.restart.line) : ""
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: root.bodySize
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              textFormat: Text.PlainText
+              text: root.view.restart ? root.say(root.view.restart.detail) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: root.noteSize
+              elide: Text.ElideRight
+            }
+          }
+        }
+
         // The one thing to do now.
         Button {
           visible: root.view.primary !== null
