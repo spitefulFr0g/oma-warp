@@ -26,6 +26,16 @@ class ScrubTests(unittest.TestCase):
             result = subprocess.run(['/usr/bin/python3', '-B', str(ROOT / 'dev/scrub'), str(path)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_scrub_accepts_only_the_audited_packaging_homepage(self):
+        address = '.'.join(('1', '1', '1', '1'))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'recipe'
+            for text, expected in ((f'url="https://{address}"', 0), (address, 1),
+                                   (f'url="https://{address}" {address}', 1)):
+                path.write_text(text)
+                result = subprocess.run(['/usr/bin/python3', '-B', str(ROOT / 'dev/scrub'), str(path)], capture_output=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
 
 class GateTests(unittest.TestCase):
     def test_gate_runs_all_steps_and_propagates_each_failure(self):
