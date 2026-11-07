@@ -9,16 +9,21 @@ PROBLEMS = (
 )
 
 
-def problems(client, probe, installed=None):
+def problems(client, probe, installed=None, operation_mode=None):
     if installed is False:
         return [{'code': 'not_installed', 'fix': 'install', 'blocking': True}]
     raised = [{'code': code, 'fix': fix, 'blocking': blocking}
               for code, fix, blocking, holds in PROBLEMS if holds(client, probe)]
     blocking = [problem for problem in raised if problem['blocking']]
-    return blocking[:1] or raised
+    if blocking:
+        return blocking[:1]
+    if (operation_mode == 'warp' and client['connection'] == 'connected'
+            and probe is not None and probe['trace'] == 'outside'):
+        raised.append({'code': 'not_through_cloudflare', 'fix': 'reconnect', 'blocking': False})
+    return raised
 
 
-def assemble_status(client, probe, update, job, now, *, installed=None):
+def assemble_status(client, probe, update, job, now, *, installed=None, operation_mode=None):
     return {
         'schema': 1, 'observed_at': now.isoformat().replace('+00:00', 'Z'),
         'client': client, 'probe': probe,
@@ -26,5 +31,5 @@ def assemble_status(client, probe, update, job, now, *, installed=None):
             'latest': None, 'verified_at': None, 'available': None,
             'last_error': None, 'due': True,
         },
-        'job': job, 'problems': problems(client, probe, installed),
+        'job': job, 'problems': problems(client, probe, installed, operation_mode),
     }
