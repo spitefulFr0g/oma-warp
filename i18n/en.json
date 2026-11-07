@@ -16,6 +16,9 @@
   "job.start": "Starting the WARP service…",
   "job.register": "Registering this device…",
   "job.hint": "In a terminal · started {ago}",
+  "update.line": "Update available",
+  "update.versions": "{from} → {to}",
+  "update.button": "Update",
   "time.s": "{n} s ago",
   "time.min": "{n} min ago",
   "time.h": "{n} h ago"
