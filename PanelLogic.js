@@ -283,13 +283,28 @@ function isPlace(value) {
   return typeof value === "string" && PLACE.test(value)
 }
 
+var DNS_VERDICTS = [null, "ok", "bypassed", "broken", "shared"]
+
 // The backend's probe for the current connection, or null for none. Its
 // address and location only ever reach plain-text sinks, short as they are.
 function isProbe(value) {
   if (value === null) return true
-  return isObject(value) && TRACES.indexOf(value.trace) >= 0
+  return isObject(value) && TRACES.indexOf(value.trace) >= 0 && isTime(value.checked_at)
     && isNullOr(value.ip, function(ip) { return typeof ip === "string" && IP.test(ip) })
     && isNullOr(value.colo, isPlace) && isNullOr(value.country, isPlace)
+    && DNS_VERDICTS.indexOf(value.dns) >= 0
+}
+
+var SERVICES = [null, "running", "stopped"]
+var DAEMONS = [null, "ok", "unresponsive"]
+var FLAGS = [null, true, false]
+
+// The client's facts, each one of the contract's values or null.
+function isClient(value) {
+  return isObject(value) && CONNECTIONS.indexOf(value.connection) >= 0
+    && (value.version === null || isVersion(value.version))
+    && SERVICES.indexOf(value.service) >= 0 && DAEMONS.indexOf(value.daemon) >= 0
+    && FLAGS.indexOf(value.registered) >= 0 && FLAGS.indexOf(value.restart_needed) >= 0
 }
 
 // `status --json` output is untrusted text. Anything that is not a schema-1
@@ -301,9 +316,7 @@ function parseStatus(text) {
   } catch (e) {
     return null
   }
-  if (!isObject(doc) || doc.schema !== 1 || !isObject(doc.client)) return null
-  if (CONNECTIONS.indexOf(doc.client.connection) < 0) return null
-  if (doc.client.version !== null && !isVersion(doc.client.version)) return null
+  if (!isObject(doc) || doc.schema !== 1 || !isClient(doc.client)) return null
   if (!isUpdate(doc.update, doc.client.version)) return null
   if (!isProblemList(doc.problems)) return null
   if (!isJob(doc.job)) return null
@@ -386,9 +399,10 @@ function ipRow(probe, through, checking, visible) {
   return row
 }
 
-// The one thing to do now, as a full-width button. A Job the Panel can't
-// launch yet still shows as the fix, disabled. Reconnect is a switch
-// command, so it waits for any other to end.
+// A Problem's fix as a button: the one thing to do now on Status, or beside
+// its row in Diagnostics. A Job the Panel can't launch yet still shows as
+// the fix, disabled. Reconnect is a switch command, so it waits for any
+// other to end.
 function primaryButton(problem, broken, toggling) {
   if (!problem || !problem.fix) return null
   var unwired = JOB_ACTIONS.indexOf(problem.fix) >= 0 && LAUNCHED_JOBS.indexOf(problem.fix) < 0
@@ -442,6 +456,13 @@ function checkAbandoned(exitCode, text) {
   return (attempt.last_error === null) !== (exitCode === 0)
 }
 
+// The back-off once a check has ended, from its exit and output: from now
+// when it recorded no attempt, and none when it did, as the backend's own
+// 12 h clock restarted with that attempt. Whoever started the check.
+function backOffAfterCheck(exitCode, text, nowMs) {
+  return checkAbandoned(exitCode, text) ? nowMs : NaN
+}
+
 // A check the Panel had to abandon (cut off at its deadline, or dead before
 // it could record its attempt) holds the next one off for the same 12 h a
 // recorded attempt would.
@@ -457,6 +478,157 @@ function backgroundCheck(doc, flags, now) {
   return !!doc && !doc.job && flags.backendError !== true && doc.update.due === true
     && flags.autoCheck !== false && flags.checkInFlight !== true
     && !recentlyAbandoned(flags.checkAbandonedAt, now)
+}
+
+// Diagnostics: every fact WARP depends on, one row each, in table order.
+// Each Problem belongs to one row, where its fix sits and its explanation
+// spans the row beneath.
+var DIAGNOSTICS_ROWS = ["package", "service", "daemon", "registration", "connection", "through", "location", "dns", "latest"]
+var PROBLEM_ROWS = {
+  not_installed: "package", service_stopped: "service", daemon_unresponsive: "daemon", not_registered: "registration",
+  not_through_cloudflare: "through", dns_broken: "dns", dns_bypassed: "dns", dns_shared: "dns"
+}
+
+// A cell: its message and how it reads. "bad" is a fact that is wrong,
+// "muted" one that isn't there to know, "dim" one still coming or that
+// couldn't be had.
+function cell(key, tone, args) {
+  return { value: message(key, args), tone: tone || "normal" }
+}
+
+var UNKNOWN = "val.unknown"
+
+function serviceCell(client) {
+  if (client.service === "running") return cell(client.restart_needed === true ? "val.runningOld" : "val.running")
+  if (client.service === "stopped") return cell("val.stopped", "bad")
+  return cell(UNKNOWN, "muted")
+}
+
+function daemonCell(client) {
+  if (client.daemon === "ok") return cell("val.responding")
+  if (client.daemon === "unresponsive") return cell("val.notResponding", "bad")
+  return cell(UNKNOWN, "muted")
+}
+
+function registrationCell(client) {
+  if (client.registered === true) return cell("val.registered")
+  if (client.registered === false) return cell("val.notRegistered", "bad")
+  return cell(UNKNOWN, "muted")
+}
+
+var CONNECTION_VALUES = { connected: "val.connected", connecting: "val.connecting", disconnected: "val.disconnected" }
+
+function connectionCell(connection) {
+  return Object.prototype.hasOwnProperty.call(CONNECTION_VALUES, connection) ? cell(CONNECTION_VALUES[connection]) : cell(UNKNOWN, "muted")
+}
+
+// Through Cloudflare, from the probe on the current connection, with how
+// long ago it was taken. Traffic outside WARP is only wrong while WARP is
+// on; while it is off, that is what off means.
+function throughCell(connection, probe, checking, now) {
+  if (!probe) return checking ? cell("val.checking", "dim") : cell(UNKNOWN, "muted")
+  var verdict
+  if (probe.trace === "through") verdict = cell("val.yes")
+  else if (probe.trace === "failed") verdict = cell("val.couldntCheck", "dim")
+  else verdict = connection === "disconnected" ? cell("val.noWhileOff", "muted") : cell("val.no", "bad")
+  verdict.detail = message("checked", { ago: ago(probe.checked_at, now) })
+  return verdict
+}
+
+function locationCell(probe) {
+  if (!probe || probe.colo === null || probe.country === null) return cell(UNKNOWN, "muted")
+  return cell("val.location", "normal", { colo: probe.colo, country: probe.country })
+}
+
+var DNS_VALUES = { ok: ["val.dnsOk", "normal"], bypassed: ["val.dnsBypassed", "bad"], broken: ["val.dnsBroken", "bad"],
+                   shared: ["val.dnsShared", "bad"] }
+
+// DNS is only ever checked while connected.
+function dnsCell(connection, probe) {
+  if (connection === "disconnected") return cell("val.notWhileOff", "muted")
+  if (!probe || !Object.prototype.hasOwnProperty.call(DNS_VALUES, probe.dns)) return cell(UNKNOWN, "muted")
+  return cell(DNS_VALUES[probe.dns][0], DNS_VALUES[probe.dns][1])
+}
+
+// The last release that passed the Verification chain, and when. It is
+// marked installed only when it is exactly the installed version: the
+// backend compares versions, the Panel only recognises the same one.
+// A failed check keeps what was verified before, and says so beneath.
+function latestCell(client, update, now) {
+  var latest
+  if (update.latest === null) latest = cell("val.never", "muted")
+  else if (update.latest === client.version) latest = cell("val.installed", "normal", { v: update.latest })
+  else latest = cell("val.version", "normal", { v: update.latest })
+  if (update.latest !== null && update.verified_at !== null) latest.detail = message("verified", { ago: ago(update.verified_at, now) })
+  if (update.last_error !== null) latest.error = message("check.err." + update.last_error)
+  return latest
+}
+
+// The package is absent only when the backend says so with not_installed.
+// A version it couldn't read is unknown, not missing.
+function packageCell(client, problems) {
+  if (client.version !== null) return cell("val.version", "normal", { v: client.version })
+  var absent = problems.some(function(problem) { return problem.code === "not_installed" })
+  return absent ? cell("val.notInstalled", "bad") : cell(UNKNOWN, "muted")
+}
+
+function diagnosticsRows(doc, checking, broken, toggling, now) {
+  var client = doc.client
+  var connection = client.connection
+  var cells = {
+    package: packageCell(client, doc.problems),
+    service: serviceCell(client),
+    daemon: daemonCell(client),
+    registration: registrationCell(client),
+    connection: connectionCell(connection),
+    through: throughCell(connection, doc.probe, checking, now),
+    location: locationCell(doc.probe),
+    dns: dnsCell(connection, doc.probe),
+    latest: latestCell(client, doc.update, now)
+  }
+  // Nothing else is offered while a Job runs.
+  var problems = doc.job ? [] : doc.problems
+  return DIAGNOSTICS_ROWS.map(function(id) {
+    var c = cells[id]
+    var row = { id: id, label: message("row." + id), value: c.value, tone: c.tone, detail: c.detail || null,
+                fix: null, why: null, error: c.error || null }
+    for (var i = 0; i < problems.length; i++) {
+      if (PROBLEM_ROWS[problems[i].code] !== id) continue
+      row.fix = primaryButton(problems[i], broken, toggling)
+      row.why = message("why." + problems[i].code)
+    }
+    return row
+  })
+}
+
+// Status is the default view; Diagnostics is behind ⓘ, and ← comes back.
+// The hero's control says which way it goes.
+function heroControl(page) {
+  return page === "diagnostics" ? { glyph: "←", tooltip: message("back"), page: "status" }
+                                : { glyph: "ⓘ", tooltip: message("details"), page: "diagnostics" }
+}
+
+// The Panel's settings with the auto-check switch set, to write back through
+// the shell's plugin settings: every other key the entry holds is kept, and
+// the shell writes the entry's id itself. Only a real true switches it on.
+function autoCheckSettings(settings, on) {
+  var entry = {}
+  if (isObject(settings)) for (var key in settings) if (key !== "id") entry[key] = settings[key]
+  entry.autoCheck = on === true
+  return entry
+}
+
+// Below the Diagnostics table: the auto-check switch and Check now. Check
+// now is asked for, so it ignores auto-check and the back-off after an
+// abandoned check; only one check runs at a time, and none beside a Job or
+// while the backend is broken.
+function checkSection(doc, flags) {
+  var running = flags.checkInFlight === true
+  return {
+    auto: { label: message("auto.label"), checked: flags.autoCheck !== false },
+    button: { label: message(running ? "check.running" : "check.button"),
+              enabled: !!doc && !doc.job && flags.backendError !== true && !running }
+  }
 }
 
 function view(doc, flags, now) {
@@ -477,6 +649,7 @@ function view(doc, flags, now) {
   // and one follows every switch command.
   var checking = (flags.probeInFlight === true || !!inFlight) && probe === null
   var meta = heroMeta(connection, job, problem, through, checking)
+  var page = flags.page === "diagnostics" ? "diagnostics" : "status"
   var fix = primaryButton(problem, broken, !!inFlight)
   var restart = job ? null : restartRow(doc, fix, broken)
   var update = job ? null : updateRow(doc, fix, broken)
@@ -484,13 +657,15 @@ function view(doc, flags, now) {
     greyed: broken,
     banner: broken ? message("backendError") : null,
     bar: barIcon(connection, job, problem, through, maintenanceDot(doc)),
-    hero: { title: message("title"), meta: message(meta) },
+    page: page,
+    hero: { title: message("title"), meta: message(meta), control: heroControl(page) },
     note: job ? jobNote(job, now) : problem ? problemNote(doc.problems) : meta === "meta.unconfirmed" ? unconfirmedNote() : null,
     ip: ipRow(probe, through, checking, !job && !(problem && problem.blocking)),
     primary: fix || (restart ? restart.button : update && update.primary ? update.button : null),
     restart: restart,
     update: update,
     check: { start: backgroundCheck(doc, flags, now) },
+    diagnostics: { rows: doc ? diagnosticsRows(doc, checking, broken, !!inFlight, now) : [], check: checkSection(doc, flags) },
     toggle: {
       checked: inFlight ? inFlight !== "disconnect" : on,
       enabled: known && !job && !inFlight && !broken,
