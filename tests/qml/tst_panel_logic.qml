@@ -1356,7 +1356,8 @@ TestCase {
       { tag: "Register", fixture: "not_registered", kind: "job" },
       { tag: "Restart service", fixture: "daemon_unresponsive", kind: "job" },
       { tag: "Restart to finish the update", fixture: "restart", kind: "job" },
-      { tag: "Update, not wired yet", fixture: "update", kind: null },
+      { tag: "Update", fixture: "update", kind: "job" },
+      { tag: "Update, backend broken", fixture: "update", flags: { backendError: true }, kind: null },
     ]
   }
 
@@ -1371,14 +1372,117 @@ TestCase {
     compare(Logic.primaryDispatch({ action: "reconnect", label: null, enabled: "yes" }), null)
   }
 
-  // The Update Job isn't wired yet: neither position launches anything.
-  function test_update_launches_nothing_yet() {
-    compare(Logic.jobLaunch("/srv/oma-warp", viewOf("update").primary, "k9-x1"), null)
-    var text = variant("service_stopped", function(d) {
+  // Reconnect keeps the primary slot over an available Update and still
+  // runs in the background; the update row's own button runs the Job.
+  function test_reconnect_beside_update_stays_a_background_command() {
+    var text = variant("outside", function(d) {
       d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
     })
-    compare(Logic.jobLaunch("/srv/oma-warp", Logic.view(Logic.parseStatus(text), {}, now).update.button, "k9-x1"), null)
-    compare(Logic.jobLaunch("/srv/oma-warp", { action: "update", label: null, enabled: true }, "k9-x1"), null)
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.primary.action, "reconnect")
+    compare(Logic.primaryDispatch(v.primary), "toggle")
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"), null)
+    compare(v.update.primary, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.update.button, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'update' '--job-id' 'k9-x1'"])
+  }
+
+  // Update in the primary slot runs the Update Job in the terminal, where
+  // pacman's confirmation and sudo work normally.
+  function test_update_button_launches_the_update_job_in_a_terminal() {
+    var primary = viewOf("update").primary
+    compare(say(primary.label), "Update")
+    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'update' '--job-id' 'k9-x1'"])
+  }
+
+  function test_update_command_survives_any_plugin_folder() {
+    var primary = viewOf("update").primary
+    compare(Logic.jobLaunch("/srv/it's $(here) `x`; a b", primary, "k9-x1")[1],
+            "'/usr/bin/python3' '-I' '-B' '/srv/it'\\''s $(here) `x`; a b/oma-warp' 'update' '--job-id' 'k9-x1'")
+  }
+
+  // Update launches only from a live document, with a launchable id and the
+  // plugin folder known, from either position; otherwise it launches
+  // nothing.
+  function test_update_launches_nothing_unless_it_can_run_data() {
+    var rows = []
+    var cases = [
+      { tag: "backend broken", flags: { backendError: true }, dir: "/srv/oma-warp", id: "k9-x1" },
+      { tag: "no plugin folder", dir: "", id: "k9-x1" },
+      { tag: "no job id", dir: "/srv/oma-warp", id: "" },
+      { tag: "job id not a string", dir: "/srv/oma-warp", id: 42 },
+      { tag: "job id like an option", dir: "/srv/oma-warp", id: "-k9" },
+      { tag: "job id with shell text", dir: "/srv/oma-warp", id: "x' ; reboot '" },
+    ]
+    ;["primary", "row"].forEach(function(position) {
+      cases.forEach(function(c) {
+        rows.push({ tag: position + ", " + c.tag, position: position, flags: c.flags, dir: c.dir, id: c.id })
+      })
+    })
+    return rows
+  }
+
+  function test_update_launches_nothing_unless_it_can_run(row) {
+    var text = variant(row.position === "primary" ? "update" : "service_stopped", function(d) {
+      d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), row.flags || ({}), now)
+    var button = row.position === "primary" ? v.primary : v.update.button
+    compare(button.action, "update")
+    compare(Logic.jobLaunch(row.dir, button, row.id), null)
+  }
+
+  // While any Job runs, the Update Job included, neither position offers
+  // Update, so nothing launches a second Job.
+  function test_update_is_not_offered_while_a_job_runs_data() {
+    return [
+      { tag: "Update Job", action: "update", line: "Updating WARP…" },
+      { tag: "Install Job", action: "install", line: "Installing WARP…" },
+    ]
+  }
+
+  function test_update_is_not_offered_while_a_job_runs(row) {
+    var text = variant("job", function(d) {
+      d.job.action = row.action
+      d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.update, null)
+    compare(v.primary, null)
+    compare(say(v.note.line), row.line)
+    compare(v.toggle.enabled, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"), null)
+  }
+
+  // When a fix or a needed restart holds the primary slot, the small row's
+  // own Update button runs the same Update Job, and the primary button
+  // still runs its own.
+  function test_update_row_launches_the_update_job_in_a_terminal_data() {
+    return [
+      { tag: "beside Start service", fixture: "service_stopped", restart: false, primary: "start" },
+      { tag: "beside Register", fixture: "not_registered", restart: false, primary: "register" },
+      { tag: "beside Restart service", fixture: "daemon_unresponsive", restart: false, primary: "restart" },
+      { tag: "beside a needed restart", fixture: "on", restart: true, primary: "restart" },
+    ]
+  }
+
+  function test_update_row_launches_the_update_job_in_a_terminal(row) {
+    var text = variant(row.fixture, function(d) {
+      d.client.restart_needed = row.restart
+      d.update = { latest: "2026.9.1180.0", verified_at: "2026-10-01T00:00:00Z", available: true, last_error: null, due: false }
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.update.primary, false)
+    compare(say(v.update.button.label), "Update")
+    compare(Logic.jobLaunch("/srv/oma-warp", v.update.button, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'update' '--job-id' 'k9-x1'"])
+    compare(Logic.jobLaunch("/srv/oma-warp", v.primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' '" + row.primary + "' '--job-id' 'k9-x1'"])
   }
 
   // Reconnect is a background command, not a terminal Job.

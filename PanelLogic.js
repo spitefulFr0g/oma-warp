@@ -74,16 +74,16 @@ function shellQuote(word) {
   return "'" + String(word).replace(/'/g, "'\\''") + "'"
 }
 
-// The Jobs the Panel launches. Update is a Job the backend knows, but its
-// button is not wired up yet.
-var LAUNCHED_JOBS = ["install", "start", "restart", "register"]
+// The Jobs the Panel launches.
+var LAUNCHED_JOBS = ["install", "update", "start", "restart", "register"]
 
-// The launcher argv for the primary button's Job, or null when the button
-// is missing, disabled or not a Job the Panel launches.
-function jobLaunch(dir, primary, jobId) {
-  if (!dir || !primary || primary.enabled !== true || LAUNCHED_JOBS.indexOf(primary.action) < 0) return null
+// The launcher argv for a button's Job (the primary button, or the update
+// row's own), or null when the button is missing, disabled or not a Job the
+// Panel launches.
+function jobLaunch(dir, button, jobId) {
+  if (!dir || !button || button.enabled !== true || LAUNCHED_JOBS.indexOf(button.action) < 0) return null
   if (typeof jobId !== "string" || !JOB_ID.test(jobId)) return null
-  var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", primary.action, "--job-id", jobId]
+  var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", button.action, "--job-id", jobId]
   return [LAUNCHER, argv.map(shellQuote).join(" ")]
 }
 
@@ -408,17 +408,16 @@ function restartRow(doc, fix, broken) {
   }
 }
 
-// The update row: the line and versions, and its own Update button. It
-// holds the primary slot unless a fix or a needed restart outranks it. The
-// button has no action yet, so it launches nothing until the Update Job is
-// wired.
+// The update row: the line and versions, and its own Update button, which
+// runs the Update Job from either position. It holds the primary slot
+// unless a fix or a needed restart outranks it.
 function updateRow(doc, fix, broken) {
   if (!updateAvailable(doc)) return null
   return {
     line: message("update.line"),
     versions: message("update.versions", { from: doc.client.version, to: doc.update.latest }),
     primary: !fix && !restartNeeded(doc),
-    button: { label: message("update.button"), enabled: !broken }
+    button: { action: "update", label: message("update.button"), enabled: !broken }
   }
 }
 
