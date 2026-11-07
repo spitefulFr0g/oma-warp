@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "observed_at": "2026-10-02T00:00:00Z",
+  "client": {
+    "version": "2026.8.2115.0",
+    "service": "running",
+    "restart_needed": false,
+    "daemon": "ok",
+    "registered": true,
+    "connection": "disconnected"
+  },
+  "probe": null,
+  "update": {
+    "latest": "2026.9.1180.0",
+    "verified_at": "2026-10-01T00:00:00Z",
+    "available": true,
+    "last_error": null,
+    "due": false
+  },
+  "job": null,
+  "problems": []
+}

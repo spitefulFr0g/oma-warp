@@ -113,3 +113,65 @@ class System:
             return fields[19] if fields[0] not in ('Z', 'X', 'x') else None
         except (OSError, IndexError, ValueError):
             return None
+
+    def run_bytes(self, argv, *, timeout):
+        return subprocess.run(argv, capture_output=True, timeout=timeout, check=False,
+                              env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'})
+
+    def temporary_directory(self, **kwargs):
+        import tempfile
+        return tempfile.TemporaryDirectory(**kwargs)
+
+    def chmod(self, path, mode):
+        path.chmod(mode)
+
+    def read_bytes(self, path):
+        return path.read_bytes()
+
+    def write_bytes(self, path, data):
+        path.write_bytes(data)
+
+    def make_directory(self, path):
+        path.mkdir(parents=True, exist_ok=True)
+
+    def replace(self, source, destination):
+        os.replace(source, destination)
+
+    def read_json(self, path):
+        import json
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def write_json(self, path, document):
+        import json
+        import tempfile
+        self.make_directory(path.parent)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=path.parent, mode='w', delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(document, output)
+            self.replace(temporary, path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def fetch_file(self, url, destination, *, timeout, limit):
+        import hashlib
+        if not url.startswith('https://'):
+            raise ValueError('HTTPS required')
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                raise ValueError('redirect refused')
+        digest, size = hashlib.sha256(), 0
+        with urllib.request.build_opener(NoRedirect).open(url, timeout=timeout) as response:
+            with destination.open('wb') as output:
+                while chunk := response.read(min(1048576, limit + 1 - size)):
+                    size += len(chunk)
+                    if size > limit:
+                        raise ValueError('Downloaded package exceeds signed size')
+                    digest.update(chunk)
+                    output.write(chunk)
+        return digest.hexdigest(), size

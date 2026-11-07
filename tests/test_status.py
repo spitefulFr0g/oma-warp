@@ -36,6 +36,9 @@ class FakeSystem:
     def now(self):
         return datetime(2026, 10, 2, tzinfo=timezone.utc)
 
+    def read_json(self, path):
+        return None
+
     def fetch(self, *args, **kwargs):
         raise AssertionError('status must not fetch')
 
