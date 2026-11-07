@@ -179,3 +179,43 @@ class System:
                     digest.update(chunk)
                     output.write(chunk)
         return digest.hexdigest(), size
+
+    def effective_uid(self):
+        return os.geteuid()
+
+    def find_command(self, command):
+        return shutil.which(command)
+
+    def resolve_path(self, path):
+        return path.resolve()
+
+    def is_file(self, path):
+        return path.is_file()
+
+    def is_directory(self, path):
+        return path.is_dir()
+
+    def glob(self, path, pattern):
+        return list(path.glob(pattern))
+
+    def make_temporary_directory(self, **kwargs):
+        return Path(tempfile.mkdtemp(**kwargs))
+
+    def copy_file(self, source, destination):
+        shutil.copyfile(source, destination)
+
+    def write_text(self, path, text, *, encoding='utf-8'):
+        path.write_text(text, encoding=encoding)
+
+    def digest(self, path):
+        import hashlib
+        digest, size = hashlib.sha256(), 0
+        with path.open('rb') as source:
+            for block in iter(lambda: source.read(1048576), b''):
+                digest.update(block)
+                size += len(block)
+        return digest.hexdigest(), size
+
+    def run_build(self, argv, *, cwd):
+        return subprocess.run(argv, cwd=cwd, check=False, text=True, capture_output=True,
+                              env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'})

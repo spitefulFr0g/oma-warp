@@ -20,6 +20,8 @@ PLACEHOLDERS = tuple(ipaddress.ip_network(value) for value in
 def violations(text):
     # These are mandated public product identifiers, not local identity data.
     text = text.replace('spitefulfr0g.oma-warp', '').replace('https://github.com/spitefulFr0g/oma-warp', '')
+    # Preserve the audited package recipe's public homepage, not arbitrary IPs.
+    text = text.replace('url="https://' + '.'.join(('1', '1', '1', '1')) + '"', '')
     personal = {'username': os.environ.get('USER') or getpass.getuser(),
                 'hostname': os.uname().nodename, 'kernel': os.uname().release}
     for category, value in personal.items():
