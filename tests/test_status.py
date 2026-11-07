@@ -21,6 +21,9 @@ class FakeSystem:
         self.runtime_dir = Path('/unused/runtime')
         self.cache_dir = Path('/unused/cache')
 
+    def read_text(self, path):
+        raise FileNotFoundError(path)
+
     def run(self, argv, *, timeout):
         assert timeout == 1.5
         result = self.outputs[tuple(argv)]
@@ -57,6 +60,12 @@ class StatusTests(unittest.TestCase):
     def test_unconfirmed_matches_shared_fixture(self):
         expected = json.loads((Path(__file__).parent / 'fixtures/unconfirmed.json').read_text())
         self.assertEqual(status(FakeSystem('Connected')), expected)
+
+    def test_service_stopped_matches_shared_fixture(self):
+        expected = json.loads((Path(__file__).parent / 'fixtures/service_stopped.json').read_text())
+        system = FakeSystem()
+        system.outputs[('systemctl', 'show', 'warp-svc', '--property=ActiveState,ActiveEnterTimestamp')] = 'ActiveState=inactive\nActiveEnterTimestamp=\n'
+        self.assertEqual(status(system), expected)
 
     def test_timeouts_blank_only_their_fact_and_dependents(self):
         cases = [
