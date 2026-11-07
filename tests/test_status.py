@@ -93,7 +93,7 @@ class StatusTests(unittest.TestCase):
                 system = FakeSystem()
                 system.outputs[('warp-cli', '-j', 'status')] = payload
                 client = status(system)['client']
-                self.assertEqual(client['daemon'], 'unresponsive')
+                self.assertIsNone(client['daemon'])
                 self.assertIsNone(client['connection'])
 
     def test_stopped_service_and_missing_registration_null_dependents(self):
@@ -140,3 +140,82 @@ class StatusTests(unittest.TestCase):
         system.outputs[('pacman', '-Qi', 'cloudflare-warp-bin')] = 'Version : 2026.8.2115.0-1\nInstall Date : Thu Oct  1 12:00:00 2026\n'
         system.outputs[('systemctl', 'show', 'warp-svc', '--property=ActiveState,ActiveEnterTimestamp')] = 'ActiveState=active\nActiveEnterTimestamp=Thu 2026-10-01 11:00:00 UTC\n'
         self.assertIs(status(system)['client']['restart_needed'], True)
+
+
+def test_confirmed_missing_package_matches_fixture_and_suppresses_lower_problems():
+    system = FakeSystem()
+    system.outputs[('pacman', '-Qi', 'cloudflare-warp-bin')] = CompletedProcess(
+        [], 1, '', "error: package 'cloudflare-warp-bin' was not found\n")
+    system.outputs[('warp-cli', '-j', 'status')] = TimeoutExpired('warp-cli', 1.5)
+    expected = json.loads((Path(__file__).parent / 'fixtures/not_installed.json').read_text())
+    assert status(system) == expected
+
+
+def test_daemon_failure_matches_fixture():
+    for result in (TimeoutExpired('warp-cli', 1.5), CompletedProcess([], 1, '', 'daemon failed')):
+        system = FakeSystem()
+        system.outputs[('warp-cli', '-j', 'status')] = result
+        expected = json.loads((Path(__file__).parent / 'fixtures/daemon_unresponsive.json').read_text())
+        assert status(system) == expected
+
+
+def test_missing_registration_is_a_responsive_daemon_and_matches_fixture():
+    for status_result in ('{"status":"Disconnected"}', CompletedProcess([], 1, '{"error":"MissingRegistration"}', '')):
+        system = FakeSystem()
+        system.outputs[('warp-cli', '-j', 'status')] = status_result
+        system.outputs[('warp-cli', '-j', 'registration', 'show')] = CompletedProcess([], 1, '{"error":"MissingRegistration"}', '')
+        expected = json.loads((Path(__file__).parent / 'fixtures/not_registered.json').read_text())
+        assert status(system) == expected
+
+
+def test_unknown_facts_never_claim_missing_package_or_registration():
+    for command, payloads in (
+        (('pacman', '-Qi', 'cloudflare-warp-bin'), ('garbage', 'PackageMissing', TimeoutExpired('pacman', 1.5), CompletedProcess([], 1, '', 'database unavailable'))),
+        (('warp-cli', '-j', 'registration', 'show'), ('{}', '{"id":false}', '{"error":"NewError"}', TimeoutExpired('warp-cli', 1.5))),
+    ):
+        for payload in payloads:
+            system = FakeSystem()
+            system.outputs[command] = payload
+            doc = status(system)
+            assert doc['problems'] == []
+            assert doc['client']['registered'] is None
+
+
+def test_malformed_package_version_does_not_claim_installed_or_missing():
+    for version in ('garbage', 'false', '2026.8.2115.0-1\nVersion : nonsense'):
+        system = FakeSystem()
+        system.outputs[('pacman', '-Qi', 'cloudflare-warp-bin')] = 'Version : ' + version
+        doc = status(system)
+        assert doc['client']['version'] is None
+        assert doc['client']['service'] is None
+        assert doc['problems'] == []
+
+
+def test_hanging_sources_use_real_subprocess_deadlines_without_blanking_unrelated_facts():
+    import sys
+    import time
+    from oma_warp.system import System
+
+    commands = list(FakeSystem().outputs)
+    baseline = status(FakeSystem())['client']
+    changes = (
+        dict.fromkeys(baseline),
+        {'service': None, 'restart_needed': None, 'daemon': None, 'registered': None, 'connection': None},
+        {'daemon': 'unresponsive', 'registered': None, 'connection': None},
+        {'registered': None},
+        {},
+    )
+    for command, changed in zip(commands, changes):
+        class HangingSystem(FakeSystem):
+            def run(self, argv, *, timeout):
+                if tuple(argv) == command:
+                    # The actual System subprocess boundary enforces the deadline;
+                    # this isolated sleeper never queries or changes host WARP.
+                    return System.run(self, [sys.executable, '-I', '-c', 'import time; time.sleep(30)'], timeout=timeout)
+                return super().run(argv, timeout=timeout)
+        started = time.monotonic()
+        doc = status(HangingSystem())
+        assert time.monotonic() - started < 2
+        assert doc['client'] == baseline | changed
+        if command == commands[0]:
+            assert doc['problems'] == []
