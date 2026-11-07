@@ -5,6 +5,18 @@ import json
 from pathlib import Path
 import unittest
 
+# The contract's Problem table, in precedence order: code -> (fix, blocking).
+PROBLEMS = {
+    'not_installed': ('install', True),
+    'service_stopped': ('start', True),
+    'daemon_unresponsive': ('restart', True),
+    'not_registered': ('register', True),
+    'not_through_cloudflare': ('reconnect', False),
+    'dns_broken': (None, False),
+    'dns_bypassed': ('reconnect', False),
+    'dns_shared': (None, False),
+}
+
 
 def assert_contract(test, doc):
     test.assertEqual(set(doc), {'schema', 'observed_at', 'client', 'probe', 'update', 'job', 'problems'})
@@ -67,9 +79,17 @@ def assert_contract(test, doc):
     test.assertIsInstance(doc['problems'], list)
     for problem in doc['problems']:
         test.assertEqual(set(problem), {'code', 'fix', 'blocking'})
-        test.assertIn(problem['code'], ('not_installed', 'service_stopped', 'daemon_unresponsive', 'not_registered', 'not_through_cloudflare', 'dns_broken', 'dns_bypassed', 'dns_shared'))
+        test.assertIn(problem['code'], PROBLEMS)
         test.assertIn(problem['fix'], (None, 'install', 'start', 'restart', 'register', 'reconnect'))
         test.assertIs(type(problem['blocking']), bool)
+        test.assertEqual((problem['fix'], problem['blocking']), PROBLEMS[problem['code']])
+    codes = [problem['code'] for problem in doc['problems']]
+    test.assertEqual(len(codes), len(set(codes)))
+    test.assertEqual(codes, sorted(codes, key=list(PROBLEMS).index))
+    if any(problem['blocking'] for problem in doc['problems']):
+        test.assertEqual(len(codes), 1)
+    test.assertLessEqual(len([code for code in codes if code.startswith('dns_')]), 1)
+    test.assertEqual('service_stopped' in codes, client['service'] == 'stopped')
 
 
 class ContractTests(unittest.TestCase):
@@ -91,4 +111,30 @@ class ContractTests(unittest.TestCase):
             if change == 'dependency': doc['client']['service'] = 'stopped'
             if change == 'schema': doc['schema'] = True
             with self.subTest(change=change), self.assertRaises(AssertionError):
+                assert_contract(self, doc)
+
+    def test_contract_rejects_problem_lists_that_break_the_precedence_rules(self):
+        import copy
+        original = json.loads((Path(__file__).parent / 'fixtures/unconfirmed.json').read_text())
+        original['probe'] = {'checked_at': '2026-10-02T00:00:00Z', 'trace': 'outside', 'ip': '203.0.113.7',
+                             'colo': 'XXX', 'country': 'XX', 'dns': 'bypassed'}
+        def problem(code):
+            fix, blocking = PROBLEMS[code]
+            return {'code': code, 'fix': fix, 'blocking': blocking}
+        original['problems'] = [problem('not_through_cloudflare'), problem('dns_bypassed')]
+        assert_contract(self, original)
+        cases = {
+            'out of order': [problem('dns_bypassed'), problem('not_through_cloudflare')],
+            'two blocking': [problem('service_stopped'), problem('not_registered')],
+            'blocking not alone': [problem('service_stopped'), problem('dns_bypassed')],
+            'two dns codes': [problem('dns_broken'), problem('dns_bypassed')],
+            'duplicate': [problem('dns_bypassed'), problem('dns_bypassed')],
+            'wrong fix': [dict(problem('service_stopped'), fix='restart')],
+            'fix for a fixless code': [dict(problem('dns_shared'), fix='reconnect')],
+            'wrong blocking': [dict(problem('not_through_cloudflare'), blocking=True)],
+        }
+        for name, problems in cases.items():
+            doc = copy.deepcopy(original)
+            doc['problems'] = problems
+            with self.subTest(case=name), self.assertRaises(AssertionError):
                 assert_contract(self, doc)
