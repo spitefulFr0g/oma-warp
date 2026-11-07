@@ -90,6 +90,12 @@ def assert_contract(test, doc):
         test.assertEqual(len(codes), 1)
     test.assertLessEqual(len([code for code in codes if code.startswith('dns_')]), 1)
     test.assertEqual('service_stopped' in codes, client['service'] == 'stopped')
+    test.assertEqual('daemon_unresponsive' in codes, client['daemon'] == 'unresponsive')
+    test.assertEqual('not_registered' in codes, client['registered'] is False)
+    if 'not_installed' in codes:
+        test.assertIsNone(client['version'])
+    if client['daemon'] == 'unresponsive':
+        test.assertEqual(client['service'], 'running')
 
 
 class ContractTests(unittest.TestCase):
@@ -138,3 +144,21 @@ class ContractTests(unittest.TestCase):
             doc['problems'] = problems
             with self.subTest(case=name), self.assertRaises(AssertionError):
                 assert_contract(self, doc)
+
+
+def test_contract_requires_blocking_problem_to_match_its_fact():
+    import copy
+    test = unittest.TestCase()
+    fixtures = Path(__file__).parent / 'fixtures'
+    for name in ('daemon_unresponsive', 'not_registered'):
+        doc = json.loads((fixtures / f'{name}.json').read_text())
+        doc['problems'] = []
+        with test.assertRaises(AssertionError):
+            assert_contract(test, doc)
+    original = json.loads((fixtures / 'off.json').read_text())
+    for code in ('not_installed', 'daemon_unresponsive', 'not_registered'):
+        doc = copy.deepcopy(original)
+        fix, blocking = PROBLEMS[code]
+        doc['problems'] = [dict(code=code, fix=fix, blocking=blocking)]
+        with test.assertRaises(AssertionError):
+            assert_contract(test, doc)
