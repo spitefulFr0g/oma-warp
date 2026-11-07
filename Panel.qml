@@ -157,10 +157,11 @@ Panel {
     poll()
   }
 
-  // The Panel closes first so the terminal gets the user's attention; the
-  // terminal is never a child of this Panel.
-  function launchJob() {
-    var argv = Logic.jobLaunch(pluginDir, view.primary, Logic.jobId(Date.now(), Math.random()))
+  // The one way a button starts a Job: the primary button, or the update
+  // row's own Update. The Panel closes first so the terminal gets the
+  // user's attention; the terminal is never a child of this Panel.
+  function launchJob(jobButton) {
+    var argv = Logic.jobLaunch(pluginDir, jobButton, Logic.jobId(Date.now(), Math.random()))
     if (!argv) return
     root.close()
     Quickshell.execDetached(argv)
@@ -506,7 +507,6 @@ Panel {
             }
           }
 
-          // The Update Job isn't wired yet, so the button has nothing behind it.
           Button {
             id: updateButton
             visible: root.view.update !== null && !root.view.update.primary
@@ -518,6 +518,7 @@ Panel {
             text: root.view.update ? root.say(root.view.update.button.label) : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
+            onClicked: root.launchJob(root.view.update ? root.view.update.button : null)
           }
         }
 
@@ -579,7 +580,7 @@ Panel {
           text: root.view.primary ? root.say(root.view.primary.label) : ""
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.launchJob()
+          onClicked: root.launchJob(root.view.primary)
         }
       }
     }
