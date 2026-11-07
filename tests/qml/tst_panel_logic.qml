@@ -1505,14 +1505,24 @@ TestCase {
   }
 
   // A Panel event for the probe schedule, written "type" or "type:detail":
-  // "polled:<name>" reports that Fixture, "polled:broken" a failed poll,
-  // and "toggleEnded:<action>" the end of that switch command.
+  // "polled:<name>" reports that Fixture, "polled:<name>+<action>" that
+  // Fixture with that Job running, "polled:broken" a failed poll, and
+  // "toggleEnded:<action>" the end of that switch command.
   function probeEvent(text) {
     var parts = text.split(":")
     var event = { type: parts[0] }
-    if (parts[0] === "polled") event.doc = parts[1] === "broken" ? null : Logic.parseStatus(fixture(parts[1]))
+    if (parts[0] === "polled") event.doc = parts[1] === "broken" ? null : polledDoc(parts[1])
     if (parts[0] === "toggleEnded") event.action = parts[1]
     return event
+  }
+
+  function polledDoc(detail) {
+    var parts = detail.split("+")
+    var doc = Logic.parseStatus(parts.length === 1 ? fixture(parts[0]) : variant(parts[0], function(doc) {
+      doc.job = { action: parts[1], started_at: "2026-10-02T00:00:00Z" }
+    }))
+    verify(doc !== null, detail + " parses")
+    return doc
   }
 
   // Drives the probe schedule through Panel events, as Panel.qml does, and
@@ -1604,6 +1614,37 @@ TestCase {
   }
 
   function test_reconnect_probes_again(row) {
+    var result = schedule(row.events)
+    compare(result.starts, row.starts)
+    compare(result.most, 1)
+    compare(result.inFlight, row.inFlight)
+  }
+
+  // Restart and Update both invalidate the probe, and a fast one can leave
+  // the connection reading connected before and after: the end of a Job
+  // seen running probes once more. Only a poll that reports no Job ends it;
+  // a failed poll says nothing, and other Jobs probe only by changing the
+  // connection.
+  function test_a_restart_or_update_ending_probes_again_data() {
+    var settled = ["pollStarted", "polled:on", "ended", "pollStarted", "polled:on"]
+    function polled(name) { return ["pollStarted", "polled:" + name] }
+    return [
+      { tag: "restart over between polls", events: settled.concat(polled("on+restart"), polled("unconfirmed")), starts: 2, inFlight: true },
+      { tag: "update over between polls", events: settled.concat(polled("on+update"), polled("unconfirmed")), starts: 2, inFlight: true },
+      { tag: "still running", events: settled.concat(polled("on+restart"), polled("unconfirmed+restart"), polled("unconfirmed+restart")), starts: 1, inFlight: false },
+      { tag: "then steady polls", events: settled.concat(polled("on+restart"), polled("unconfirmed"), ["ended"], polled("unconfirmed"), polled("unconfirmed"), polled("on"), polled("on")), starts: 2, inFlight: false },
+      { tag: "failed polls end nothing", events: settled.concat(polled("on+update"), polled("broken"), polled("broken")), starts: 1, inFlight: false },
+      { tag: "then the Job is gone", events: settled.concat(polled("on+update"), polled("broken"), polled("unconfirmed")), starts: 2, inFlight: true },
+      { tag: "no Job seen, failed poll between", events: settled.concat(polled("broken"), polled("unconfirmed")), starts: 1, inFlight: false },
+      { tag: "restart, then update, one probe", events: settled.concat(polled("on+restart"), polled("on+update"), polled("unconfirmed")), starts: 2, inFlight: true },
+      { tag: "ended during a probe", events: polled("on").concat(polled("on+restart"), polled("unconfirmed")), starts: 1, inFlight: true },
+      { tag: "then that probe ends", events: polled("on").concat(polled("on+restart"), polled("unconfirmed"), ["ended"]), starts: 2, inFlight: true },
+      { tag: "and the fresh one too", events: polled("on").concat(polled("on+restart"), polled("unconfirmed"), ["ended", "ended"], polled("unconfirmed"), polled("unconfirmed")), starts: 2, inFlight: false },
+      { tag: "a start Job, connection unchanged", events: ["pollStarted", "polled:off", "ended"].concat(polled("job"), polled("off")), starts: 1, inFlight: false },
+    ]
+  }
+
+  function test_a_restart_or_update_ending_probes_again(row) {
     var result = schedule(row.events)
     compare(result.starts, row.starts)
     compare(result.most, 1)

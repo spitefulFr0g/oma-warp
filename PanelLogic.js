@@ -143,9 +143,12 @@ var PROBE_DEADLINE = 8000
 // time, so it never holds up status. A probe still counts as in flight
 // after it ends, until a status poll started after that reports what it
 // found: the backend keeps the result only while it holds for the current
-// connection, so status is the one place it is read from.
+// connection, so status is the one place it is read from. Restart and
+// Update throw the result away, so the end of either one seen running
+// probes again, even when the connection reads the same before and after.
 function probeIdle() {
-  return { seen: false, connection: null, wanted: false, running: false, ended: false, clearing: false }
+  return { seen: false, connection: null, wanted: false, running: false, ended: false, clearing: false,
+           jobSeen: false }
 }
 
 function probeInFlight(state) {
@@ -158,10 +161,13 @@ function probeInFlight(state) {
 //   {type: "pollStarted"}  a status poll started
 //   {type: "polled", doc}  that poll reported doc, or null when it failed
 //   {type: "toggleEnded", action}  a switch command ended
-// The first connection seen counts as a change, from not knowing it.
+// The first connection seen counts as a change, from not knowing it. A
+// Restart or Update ends at the first poll that reports no Job at all; a
+// failed poll reports nothing.
 function probeStep(state, event) {
   var next = { seen: state.seen, connection: state.connection, wanted: state.wanted,
-               running: state.running, ended: state.ended, clearing: state.clearing }
+               running: state.running, ended: state.ended, clearing: state.clearing,
+               jobSeen: state.jobSeen }
   if (event.type === "opened" && !probeInFlight(next)) next.wanted = true
   if (event.type === "toggleEnded" && event.action === "reconnect") next.wanted = true
   if (event.type === "ended" && next.running) {
@@ -179,6 +185,12 @@ function probeStep(state, event) {
     if (!next.seen || connection !== next.connection) next.wanted = true
     next.seen = true
     next.connection = connection
+    var job = event.doc.job
+    if (job && (job.action === "restart" || job.action === "update")) next.jobSeen = true
+    if (!job && next.jobSeen) {
+      next.wanted = true
+      next.jobSeen = false
+    }
   }
   var start = next.wanted && !next.running
   if (start) {
