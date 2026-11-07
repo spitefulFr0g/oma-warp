@@ -53,8 +53,8 @@ a reviewed source change.
 
 Cloudflare's signed metadata does not provide `Valid-Until`. To defend against
 replayed older metadata, Update compares the verified release with the
-installed version and refuses a downgrade. An equal or older release is left
-installed.
+installed version and refuses a downgrade. If the repository release is equal
+or older, the installed client is kept.
 
 ## Remove the plugin
 
