@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 
 
@@ -22,6 +23,12 @@ class System:
 
     def now(self):
         return datetime.now(timezone.utc)
+
+    def monotonic(self):
+        return time.monotonic()
+
+    def wait(self, seconds):
+        time.sleep(seconds)
 
     def run(self, argv, *, timeout):
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,

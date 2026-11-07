@@ -4,6 +4,7 @@ import json
 from .client import gather
 from .connection import switch
 from .jobs import live_job, register, start
+from .restart import restart
 from .status import assemble_status
 from .system import System
 from .uninstall import uninstall
@@ -20,7 +21,7 @@ def main(argv=None, *, system=None):
     sub.add_parser('connect')
     sub.add_parser('disconnect')
     sub.add_parser('uninstall')
-    for action in ('start', 'register'):
+    for action in ('start', 'register', 'restart'):
         job = sub.add_parser(action)
         job.add_argument('--job-id', required=True)
     args = parser.parse_args(argv)
@@ -33,8 +34,8 @@ def main(argv=None, *, system=None):
         return int(document['last_error'] is not None)
     if args.command in ('connect', 'disconnect'):
         return switch(system, args.command)
-    if args.command in ('start', 'register'):
-        return (start if args.command == 'start' else register)(system, args.job_id)
+    if args.command in ('start', 'register', 'restart'):
+        return {'start': start, 'register': register, 'restart': restart}[args.command](system, args.job_id)
     if args.command == 'uninstall':
         return uninstall(system)
     facts = gather(system)
