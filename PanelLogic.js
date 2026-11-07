@@ -71,10 +71,14 @@ function shellQuote(word) {
   return "'" + String(word).replace(/'/g, "'\\''") + "'"
 }
 
+// The Jobs the Panel launches. Install and Restart service are Jobs the
+// backend knows, but their fix buttons are not wired up yet.
+var LAUNCHED_JOBS = ["start", "register"]
+
 // The launcher argv for the primary button's Job, or null when the button
-// is missing, disabled or not a Job.
+// is missing, disabled or not a Job the Panel launches.
 function jobLaunch(dir, primary, jobId) {
-  if (!dir || !primary || primary.enabled !== true || JOB_ACTIONS.indexOf(primary.action) < 0) return null
+  if (!dir || !primary || primary.enabled !== true || LAUNCHED_JOBS.indexOf(primary.action) < 0) return null
   if (typeof jobId !== "string" || !JOB_ID.test(jobId)) return null
   var argv = [PYTHON, "-I", "-B", dir + "/oma-warp", primary.action, "--job-id", jobId]
   return [LAUNCHER, argv.map(shellQuote).join(" ")]
@@ -124,14 +128,44 @@ function isObject(value) {
 }
 
 var CONNECTIONS = [null, "connected", "connecting", "disconnected"]
-var PROBLEM_CODES = ["not_installed", "service_stopped", "daemon_unresponsive", "not_registered",
-                     "not_through_cloudflare", "dns_broken", "dns_bypassed", "dns_shared"]
-var FIXES = [null, "install", "start", "restart", "register", "reconnect"]
 var JOB_ACTIONS = ["install", "update", "restart", "start", "register"]
 
-function isProblem(value) {
-  return isObject(value) && PROBLEM_CODES.indexOf(value.code) >= 0
-    && FIXES.indexOf(value.fix) >= 0 && typeof value.blocking === "boolean"
+// The contract's Problems in precedence order, each with its one fix and
+// blocking flag. The backend classifies; the Panel only checks the list.
+var PROBLEMS = [
+  { code: "not_installed", fix: "install", blocking: true },
+  { code: "service_stopped", fix: "start", blocking: true },
+  { code: "daemon_unresponsive", fix: "restart", blocking: true },
+  { code: "not_registered", fix: "register", blocking: true },
+  { code: "not_through_cloudflare", fix: "reconnect", blocking: false },
+  { code: "dns_broken", fix: null, blocking: false },
+  { code: "dns_bypassed", fix: "reconnect", blocking: false },
+  { code: "dns_shared", fix: null, blocking: false }
+]
+
+// Where a Problem stands in precedence order, or -1 when it is not exactly
+// one of the contract's.
+function problemRank(value) {
+  if (!isObject(value)) return -1
+  for (var i = 0; i < PROBLEMS.length; i++) {
+    var known = PROBLEMS[i]
+    if (value.code === known.code) return value.fix === known.fix && value.blocking === known.blocking ? i : -1
+  }
+  return -1
+}
+
+// Known Problems, each once and in precedence order. A blocking Problem
+// nulls every fact below it, so it is always alone.
+function isProblemList(value) {
+  if (!Array.isArray(value)) return false
+  var last = -1
+  for (var i = 0; i < value.length; i++) {
+    var rank = problemRank(value[i])
+    if (rank <= last) return false
+    if (value[i].blocking && value.length !== 1) return false
+    last = rank
+  }
+  return true
 }
 
 function isJob(value) {
@@ -150,7 +184,7 @@ function parseStatus(text) {
   }
   if (!isObject(doc) || doc.schema !== 1 || !isObject(doc.client)) return null
   if (CONNECTIONS.indexOf(doc.client.connection) < 0) return null
-  if (!Array.isArray(doc.problems) || !doc.problems.every(isProblem)) return null
+  if (!isProblemList(doc.problems)) return null
   if (!isJob(doc.job)) return null
   return doc
 }
@@ -184,10 +218,12 @@ function problemNote(problem) {
   return { kind: "problem", line: message("problem." + problem.code), detail: message("why." + problem.code) }
 }
 
-// The one thing to do now, as a full-width button.
+// The one thing to do now, as a full-width button. A Job the Panel can't
+// launch yet still shows as the fix, disabled.
 function primaryButton(problem, broken) {
   if (!problem || !problem.fix) return null
-  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken }
+  var unwired = JOB_ACTIONS.indexOf(problem.fix) >= 0 && LAUNCHED_JOBS.indexOf(problem.fix) < 0
+  return { action: problem.fix, label: message("fix." + problem.fix), enabled: !broken && !unwired }
 }
 
 function view(doc, flags, now) {

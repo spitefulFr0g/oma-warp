@@ -98,6 +98,66 @@ TestCase {
     compare(v.ip.visible, false)
   }
 
+  // The rest of the blocking chain. Each is the only Problem the backend
+  // reports, so the Panel reads like service_stopped with its own copy.
+  function test_blocking_problem_data() {
+    return [
+      { tag: "not installed", fixture: "not_installed", line: "WARP isn't installed",
+        detail: "Install downloads the client from Cloudflare, verifies it and registers this device.",
+        fix: "Install", action: "install" },
+      { tag: "daemon unresponsive", fixture: "daemon_unresponsive", line: "The WARP service isn't responding",
+        detail: "The background service is running but didn't answer.",
+        fix: "Restart service", action: "restart" },
+      { tag: "not registered", fixture: "not_registered", line: "This device isn't registered",
+        detail: "WARP needs a free registration before it can connect.",
+        fix: "Register", action: "register" },
+    ]
+  }
+
+  function test_blocking_problem(row) {
+    var v = viewOf(row.fixture)
+    compare(v.bar.glyph, crossedCloud)
+    compare(v.bar.opacity, 1)
+    compare(say(v.hero.meta), "Needs attention")
+    compare(v.toggle.enabled, false)
+    compare(v.toggle.checked, false)
+    compare(v.toggle.busy, false)
+    compare(v.note.kind, "problem")
+    compare(say(v.note.line), row.line)
+    compare(say(v.note.detail), row.detail)
+    compare(say(v.primary.label), row.fix)
+    compare(v.primary.action, row.action)
+    compare(v.ip.visible, false)
+    compare(v.greyed, false)
+    compare(v.banner, null)
+  }
+
+  // null means "can't know", never "no". Only the backend raises Problems,
+  // so a fact it couldn't read leaves the state unknown and the switch
+  // disabled, never a Problem the Panel made up.
+  function test_unknown_facts_are_not_problems_data() {
+    return [
+      { tag: "package unknown", fixture: "not_installed" },
+      { tag: "daemon status unknown", fixture: "daemon_unresponsive", change: function(c) { c.daemon = null } },
+      { tag: "registration unknown", fixture: "not_registered", change: function(c) { c.registered = null } },
+    ]
+  }
+
+  function test_unknown_facts_are_not_problems(row) {
+    var text = variant(row.fixture, function(d) {
+      d.problems = []
+      if (row.change) row.change(d.client)
+    })
+    var v = Logic.view(Logic.parseStatus(text), {}, now)
+    compare(v.bar.glyph, fullCloud)
+    compare(v.bar.opacity, 0.42)
+    compare(say(v.hero.meta), "State unknown")
+    compare(v.toggle.enabled, false)
+    compare(v.toggle.checked, false)
+    compare(v.note, null)
+    compare(v.primary, null)
+  }
+
   // While a Job runs the Panel only reports it: every action waits for it.
   function test_job() {
     var v = viewOf("job")
@@ -113,9 +173,18 @@ TestCase {
   }
 
   // The Job outranks any Problem it is there to fix: never crossed out.
-  function test_job_outranks_a_problem() {
-    var text = variant("job", function(d) {
-      d.problems = [{ code: "service_stopped", fix: "start", blocking: true }]
+  function test_job_outranks_a_problem_data() {
+    return [
+      { tag: "not installed", code: "not_installed", fix: "install" },
+      { tag: "service stopped", code: "service_stopped", fix: "start" },
+      { tag: "daemon unresponsive", code: "daemon_unresponsive", fix: "restart" },
+      { tag: "not registered", code: "not_registered", fix: "register" },
+    ]
+  }
+
+  function test_job_outranks_a_problem(row) {
+    var text = variant(row.code, function(d) {
+      d.job = { action: row.fix, started_at: "2026-10-02T00:00:00Z" }
     })
     var v = Logic.view(Logic.parseStatus(text), {}, now)
     compare(v.bar.glyph, fullCloud)
@@ -124,6 +193,7 @@ TestCase {
     compare(v.note.kind, "job")
     compare(v.primary, null)
     compare(v.ip.visible, false)
+    compare(v.toggle.enabled, false)
   }
 
   function test_job_lines_cover_every_job_action_data() {
@@ -177,6 +247,9 @@ TestCase {
       { tag: "unconfirmed", fixture: "unconfirmed", glyph: outlinedCloud, opacity: 1, meta: "Connected · not confirmed", checked: true },
       { tag: "unconfirmed, toggle in flight", fixture: "unconfirmed", inFlight: "disconnect", glyph: outlinedCloud, opacity: 1, meta: "Connected · not confirmed", checked: false },
       { tag: "service stopped", fixture: "service_stopped", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Start service" },
+      { tag: "not installed", fixture: "not_installed", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Install" },
+      { tag: "daemon unresponsive", fixture: "daemon_unresponsive", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Restart service" },
+      { tag: "not registered", fixture: "not_registered", glyph: crossedCloud, opacity: 1, meta: "Needs attention", checked: false, fix: "Register" },
     ]
   }
 
@@ -232,6 +305,24 @@ TestCase {
       { tag: "unknown fix", text: variant(function(d) { d.problems = [{ code: "service_stopped", fix: "rm -rf ~", blocking: true }] }) },
       { tag: "fix not a string", text: variant(function(d) { d.problems = [{ code: "service_stopped", fix: ["start"], blocking: true }] }) },
       { tag: "blocking not a boolean", text: variant(function(d) { d.problems = [{ code: "service_stopped", fix: "start", blocking: "yes" }] }) },
+      // Each code has one fix and one blocking flag, from the contract.
+      { tag: "another code's fix", text: variant(function(d) { d.problems = [{ code: "not_registered", fix: "start", blocking: true }] }) },
+      { tag: "fix missing", text: variant(function(d) { d.problems = [{ code: "not_installed", fix: null, blocking: true }] }) },
+      { tag: "fix where there is none", text: variant(function(d) { d.problems = [{ code: "dns_broken", fix: "reconnect", blocking: false }] }) },
+      { tag: "blocking Problem said not to block", text: variant(function(d) { d.problems = [{ code: "not_registered", fix: "register", blocking: false }] }) },
+      { tag: "routing Problem said to block", text: variant(function(d) { d.problems = [{ code: "not_through_cloudflare", fix: "reconnect", blocking: true }] }) },
+      // A blocking Problem nulls everything below it, so it is alone.
+      { tag: "two blocking Problems", text: variant(function(d) {
+        d.problems = [{ code: "service_stopped", fix: "start", blocking: true }, { code: "not_registered", fix: "register", blocking: true }] }) },
+      { tag: "blocking Problem with a DNS Problem", text: variant(function(d) {
+        d.problems = [{ code: "not_installed", fix: "install", blocking: true }, { code: "dns_bypassed", fix: "reconnect", blocking: false }] }) },
+      { tag: "blocking Problem after another", text: variant(function(d) {
+        d.problems = [{ code: "dns_shared", fix: null, blocking: false }, { code: "daemon_unresponsive", fix: "restart", blocking: true }] }) },
+      // Precedence order, each code once.
+      { tag: "out of precedence order", text: variant(function(d) {
+        d.problems = [{ code: "dns_bypassed", fix: "reconnect", blocking: false }, { code: "not_through_cloudflare", fix: "reconnect", blocking: false }] }) },
+      { tag: "the same Problem twice", text: variant(function(d) {
+        d.problems = [{ code: "dns_shared", fix: null, blocking: false }, { code: "dns_shared", fix: null, blocking: false }] }) },
       { tag: "no job key", text: variant(function(d) { delete d.job }) },
       { tag: "job not an object", text: variant(function(d) { d.job = "start" }) },
       { tag: "unknown job action", text: variant(function(d) { d.job = { action: "uninstall", started_at: "2026-10-02T00:00:00Z" } }) },
@@ -243,6 +334,18 @@ TestCase {
 
   function test_untrusted_output_is_refused(row) {
     compare(Logic.parseStatus(row.text), null)
+  }
+
+  // The validator never refuses a document the backend is held to.
+  function test_every_shared_fixture_parses_data() {
+    return ["on", "off", "connecting", "unconfirmed", "not_installed", "service_stopped",
+            "daemon_unresponsive", "not_registered", "outside", "dns_broken", "dns_bypassed",
+            "dns_shared", "multi", "trace_failed", "dropped", "update", "restart", "job",
+            "verify_failed", "due"].map(function(name) { return { tag: name, fixture: name } })
+  }
+
+  function test_every_shared_fixture_parses(row) {
+    verify(Logic.parseStatus(fixture(row.fixture)) !== null, row.fixture)
   }
 
   function test_fixtures_parse() {
@@ -304,6 +407,34 @@ TestCase {
     var primary = viewOf("service_stopped").primary
     compare(Logic.jobLaunch("/srv/it's $(here) `x`; a b", primary, "k9-x1")[1],
             "'/usr/bin/python3' '-I' '-B' '/srv/it'\\''s $(here) `x`; a b/oma-warp' 'start' '--job-id' 'k9-x1'")
+  }
+
+  // Register runs `warp-cli registration new` in the terminal, so
+  // Cloudflare's terms prompt works there.
+  function test_register_button_launches_the_register_job_in_a_terminal() {
+    var primary = viewOf("not_registered").primary
+    compare(primary.enabled, true)
+    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"),
+            ["omarchy-launch-floating-terminal-with-presentation",
+             "'/usr/bin/python3' '-I' '-B' '/srv/oma-warp/oma-warp' 'register' '--job-id' 'k9-x1'"])
+  }
+
+  // Install and Restart service show as the fix, but their Jobs are not
+  // wired to the Panel yet: the button is there, disabled, and launches
+  // nothing even if asked to.
+  function test_fixes_without_a_wired_job_show_but_launch_nothing_data() {
+    return [
+      { tag: "Install", fixture: "not_installed", action: "install" },
+      { tag: "Restart service", fixture: "daemon_unresponsive", action: "restart" },
+    ]
+  }
+
+  function test_fixes_without_a_wired_job_show_but_launch_nothing(row) {
+    var primary = viewOf(row.fixture).primary
+    compare(primary.action, row.action)
+    compare(primary.enabled, false)
+    compare(Logic.jobLaunch("/srv/oma-warp", primary, "k9-x1"), null)
+    compare(Logic.jobLaunch("/srv/oma-warp", { action: row.action, label: null, enabled: true }, "k9-x1"), null)
   }
 
   function test_nothing_launches_without_an_enabled_job_data() {
@@ -399,6 +530,8 @@ TestCase {
       { tag: "off, connecting", fixture: "off", inFlight: "connect", checked: true, meta: "Off" },
       { tag: "connecting, disconnecting", fixture: "connecting", inFlight: "disconnect", checked: false, meta: "Connecting" },
       { tag: "unconfirmed, disconnecting", fixture: "unconfirmed", inFlight: "disconnect", checked: false, meta: "Connected · not confirmed" },
+      { tag: "connecting found it unregistered", fixture: "not_registered", inFlight: "connect", checked: true, meta: "Needs attention" },
+      { tag: "disconnecting hung the daemon", fixture: "daemon_unresponsive", inFlight: "disconnect", checked: false, meta: "Needs attention" },
     ]
   }
 
