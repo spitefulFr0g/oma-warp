@@ -59,10 +59,10 @@ class InstallSystem(JobSystem):
         assert '"action": "install"' in self.files[self.runtime_dir / 'job.json']
         if argv[0].endswith('makepkg'):
             assert 'download' in self.events
-            recipe = self.read_text(kwargs['cwd'] / 'PKGBUILD') if kwargs['cwd'] / 'PKGBUILD' in self.files else self.upstream.read_text(kwargs['cwd'] / 'PKGBUILD')
+            recipe = (kwargs['cwd'] / 'PKGBUILD').read_text()
             assert "provides=('cloudflare-warp' 'warp-cli' 'warp-diag' 'warp-svc')" in recipe
             assert "conflicts=('cloudflare-warp')" in recipe
-            hook = self.upstream.read_text(kwargs['cwd'] / 'cloudflare-warp.install')
+            hook = (kwargs['cwd'] / 'cloudflare-warp.install').read_text()
             assert hook.count('setcap CAP_NET_ADMIN=+ei /usr/bin/warp-svc') == 2
             self.build_dir = kwargs['cwd']
             (kwargs['cwd'] / 'cloudflare-warp-bin-2026.8.2115.0-1-x86_64.pkg.tar.zst').write_bytes(b'package')
