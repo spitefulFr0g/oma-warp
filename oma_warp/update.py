@@ -1,4 +1,4 @@
-"""Verified update checks and the persistent update cache."""
+"""Verified checks, disposable Update Jobs and the persistent update cache."""
 from datetime import datetime, timedelta
 from pathlib import Path
 import subprocess
@@ -69,3 +69,59 @@ def status_update(system, installed):
         pass
     return {'latest': latest, 'verified_at': cache.get('verified_at'),
             'available': available, 'last_error': cache.get('last_error'), 'due': due}
+
+
+def update(system, job_id):
+    """Verify afresh under one Job; only a proven newer release may install."""
+    from .client import gather
+    from .jobs import run_job
+    from .install import build_and_install
+    from .packaging import PackagingError
+    from .restart import connection_state, restart_and_restore
+
+    def operation():
+        try:
+            repository = Repository(system=system)
+            release = repository.latest()
+            with system.temporary_directory(prefix='oma-warp-update-') as directory:
+                deb = repository.download(release, Path(directory))
+                now = timestamp(system.now())
+                system.write_json(system.cache_dir / 'update.json', {
+                    'latest': release.version, 'verified_at': now,
+                    'attempted_at': now, 'last_error': None})
+                facts = gather(system)
+                installed = facts.client['version']
+                if installed is None:
+                    system.write('Cannot determine installed WARP version; refusing Update.')
+                    return 1
+                result = system.run(['vercmp', release.version, installed], timeout=1.5)
+                if result.returncode:
+                    system.write('Cannot compare WARP versions; refusing Update.')
+                    return 1
+                if int(result.stdout.strip()) <= 0:
+                    system.write('Already current')
+                    return 0
+                if facts.client['service'] is None:
+                    system.write('Cannot determine WARP service state; refusing Update.')
+                    return 1
+                prior = connection_state(system)
+                stop_code = 0
+                try:
+                    code = build_and_install(system, release, deb, Path(directory))
+                finally:
+                    # Package hooks may start a previously stopped service even
+                    # when pacman fails or is interrupted. Preserve user intent.
+                    if facts.client['service'] == 'stopped' and gather(system).client['service'] != 'stopped':
+                        result = system.run_terminal(['sudo', 'systemctl', 'stop', 'warp-svc'])
+                        stop_code = result.returncode if result.returncode > 0 else int(result.returncode < 0)
+                if code:
+                    system.write('Could not install the WARP package.')
+                    return code
+                if facts.client['service'] == 'running':
+                    return restart_and_restore(system, prior=prior)
+                system.write('WARP did not reconnect')
+                return stop_code
+        except (RepositoryError, PackagingError, ValueError) as error:
+            system.write(f'Update failed: {error}')
+            return 1
+    return run_job(system, 'update', job_id, operation)

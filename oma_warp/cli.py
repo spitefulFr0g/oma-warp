@@ -10,7 +10,7 @@ from .restart import restart
 from .status import assemble_status
 from .system import System
 from .uninstall import uninstall
-from .update import check, status_update
+from .update import check, status_update, update
 
 
 def main(argv=None, *, system=None):
@@ -25,7 +25,7 @@ def main(argv=None, *, system=None):
     sub.add_parser('disconnect')
     sub.add_parser('reconnect')
     sub.add_parser('uninstall')
-    for action in ('start', 'register', 'install', 'restart'):
+    for action in ('start', 'register', 'install', 'restart', 'update'):
         job = sub.add_parser(action)
         job.add_argument('--job-id', required=True)
     args = parser.parse_args(argv)
@@ -41,8 +41,8 @@ def main(argv=None, *, system=None):
         if args.command == 'reconnect':
             return switch(system, 'disconnect') or switch(system, 'connect')
         return switch(system, args.command)
-    if args.command in ('start', 'register', 'install', 'restart'):
-        return {'start': start, 'register': register, 'install': install, 'restart': restart}[args.command](system, args.job_id)
+    if args.command in ('start', 'register', 'install', 'restart', 'update'):
+        return {'start': start, 'register': register, 'install': install, 'restart': restart, 'update': update}[args.command](system, args.job_id)
     if args.command == 'uninstall':
         return uninstall(system)
     if args.probe:
