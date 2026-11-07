@@ -16,13 +16,18 @@ def connection_state(system, *, timeout=1.5):
         return None
 
 
-def restart_and_restore(system):
+_RECAPTURE = object()
+
+
+def restart_and_restore(system, *, prior=_RECAPTURE):
     """Run inside the caller's Job; never acquire nested Job ownership.
 
-    Update calls this only when the service was running before installation.
+    Update passes prior state from before installation, only if service was running.
+    Omitted prior recaptures now; explicit None preserves an unknown prior state.
     Polling observes automatic restoration; it never retries a mutation.
     """
-    prior = connection_state(system)
+    if prior is _RECAPTURE:
+        prior = connection_state(system)
     invalidate(system)
     result = system.run_terminal(['sudo', 'systemctl', 'restart', 'warp-svc'])
     if result.returncode != 0:
